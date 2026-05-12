@@ -269,6 +269,7 @@ async function procesarBroadcasts() {
   const pendientes = await atRequest("GET",
     `${AT_BROADCASTS}?filterByFormula=${encodeURIComponent('{Estado}="Listo para enviar"')}`
   );
+  console.log(`🔍 Broadcasts pendientes: ${pendientes?.records?.length ?? 'error'}`, pendientes?.error ? JSON.stringify(pendientes.error) : '');
   if (!pendientes?.records?.length) return;
 
   for (const broadcast of pendientes.records) {
