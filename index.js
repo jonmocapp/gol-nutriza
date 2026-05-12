@@ -7,8 +7,9 @@ const VERIFY_TOKEN = "golnutriza2026";
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
+const FOLIO_IMAGE_URL = "https://i.ibb.co/TDP6mnRz/Folio.jpg";
+
 // ─── ESTADO DE CONVERSACIÓN POR USUARIO ──────────────────────
-// fases: "nuevo" | "esperando_confirmacion" | "esperando_listo" | "activo"
 const estadoUsuarios = new Map();
 
 function getEstado(telefono) {
@@ -23,11 +24,11 @@ function setEstado(telefono, datos) {
 const MENSAJES = {
   bienvenida: `¡Hola! 👋 Soy *Gol*, tu guía en *Fanáticos del Sabor × Mundial 2026* ⚽🏆
 
-Gracias por tu compra — estás a un paso de ganar premios increíbles: playeras, balones y hasta aparecer con youtubers.
+Gracias por tu compra — estás a un paso de ganar premios increíbles: playeras, Nintendo Switch 2, LEGO y hasta un Meet & Greet con La Cotorrisa.
 
 ¿Estás list@ para comenzar? Responde *SÍ* 🙌`,
 
-  instruccion_folio: `🔥 ¡Vamos! Necesito tu *folio de compra* para registrarte.
+  instruccion_folio_texto: `🔥 ¡Vamos! Necesita tu *folio de compra* para registrarte.
 
 Está en la *parte superior de tu ticket* 🧾
 Empieza con *84* y tiene *21 dígitos*.
@@ -61,15 +62,22 @@ Entra con tu número de teléfono para ver tus puntos y en qué lugar vas 📊`,
 
 Una vez que lo tengas responde *LISTO* 👀`,
 
-  premio: `🏆 Los premios de esta temporada:
+  premio: `🏆 *Premios Fanáticos del Sabor × Mundial 2026*
 
-🥇 *1er lugar* — Balón oficial firmado + playera
-🥈 *2do lugar* — Playera edición Mundial
-🥉 *3er lugar* — Vale de $500 en tienda
-🎮 *Top 100* — Descuento exclusivo en tu próxima compra
-⭐ También puedes aparecer con youtubers
+🥇 *1er Lugar* — 20 ganadores
+Meet & Greet con La Cotorrisa 🎉
+Torneo de fútbol estilo "reta" + fotos + autógrafos
 
-Más puntos = más chances. Juega en *fanaticosdelsabor.com* 💪`,
+🥈 *2do Lugar* — 8 ganadores
+Nintendo Switch 2 🎮
+
+🥉 *3er Lugar* — 13 ganadores
+LEGO Edición Mundial 2026 🧱
+
+🏅 *4to Lugar* — 40 ganadores
+Merch firmado Cotorrisa (playera o sudadera) 👕
+
+¡Acumula puntos en *fanaticosdelsabor.com* y gana! ⚽`,
 
   tiendas: `Puedes participar con ticket de cualquiera de nuestras marcas:
 
@@ -164,7 +172,7 @@ function detectarComando(texto) {
   return null;
 }
 
-// ─── ENVIAR MENSAJE ───────────────────────────────────────────
+// ─── ENVIAR MENSAJE DE TEXTO ──────────────────────────────────
 async function enviarMensaje(telefono, texto) {
   const res = await fetch(`https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`, {
     method: "POST",
@@ -182,6 +190,27 @@ async function enviarMensaje(telefono, texto) {
 
   const data = await res.json();
   console.log(`✉️  → ${telefono}:`, JSON.stringify(data));
+  return data;
+}
+
+// ─── ENVIAR IMAGEN ────────────────────────────────────────────
+async function enviarImagen(telefono, url, caption = "") {
+  const res = await fetch(`https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to: telefono,
+      type: "image",
+      image: { link: url, caption },
+    }),
+  });
+
+  const data = await res.json();
+  console.log(`🖼️  → ${telefono}:`, JSON.stringify(data));
   return data;
 }
 
@@ -216,71 +245,66 @@ app.post("/webhook", async (req, res) => {
 
   console.log(`📩 [${telefono}] "${textoOriginal}" | fase: ${estado.fase} | cmd: ${comando}`);
 
-  let respuesta;
-
   // ── REINICIAR (siempre disponible) ────────────────────────
   if (comando === "reiniciar") {
-    respuesta = MENSAJES.reiniciar;
     setEstado(telefono, { fase: "esperando_confirmacion" });
+    await enviarMensaje(telefono, MENSAJES.reiniciar);
 
-  // ── COMANDOS GLOBALES (disponibles en cualquier fase) ─────
+  // ── COMANDOS GLOBALES ─────────────────────────────────────
   } else if (comando === "puntos") {
-    respuesta = MENSAJES.puntos;
+    await enviarMensaje(telefono, MENSAJES.puntos);
 
   } else if (comando === "folio") {
-    respuesta = MENSAJES.folio;
+    await enviarImagen(telefono, FOLIO_IMAGE_URL, "📋 Tu folio son los 21 dígitos que empiezan con 84");
+    await enviarMensaje(telefono, MENSAJES.folio);
 
   } else if (comando === "premio") {
-    respuesta = MENSAJES.premio;
+    await enviarMensaje(telefono, MENSAJES.premio);
 
   } else if (comando === "tiendas") {
-    respuesta = MENSAJES.tiendas;
+    await enviarMensaje(telefono, MENSAJES.tiendas);
 
   } else if (comando === "reglas") {
-    respuesta = MENSAJES.reglas;
+    await enviarMensaje(telefono, MENSAJES.reglas);
 
   } else if (comando === "ayuda") {
-    respuesta = MENSAJES.ayuda;
+    await enviarMensaje(telefono, MENSAJES.ayuda);
 
   } else if (comando === "link_directo" && estado.fase === "activo") {
-    // Si ya pasó por el flujo y pide el link de nuevo
-    respuesta = `Aquí está tu acceso 👇\n\n🔗 *fanaticosdelsabor.com*`;
+    await enviarMensaje(telefono, `Aquí está tu acceso 👇\n\n🔗 *fanaticosdelsabor.com*`);
 
   // ── FLUJO PRINCIPAL ───────────────────────────────────────
   } else if (comando === "inicio" || estado.fase === "nuevo") {
-    respuesta = MENSAJES.bienvenida;
     setEstado(telefono, { fase: "esperando_confirmacion" });
+    await enviarMensaje(telefono, MENSAJES.bienvenida);
 
   } else if (comando === "confirmar" && estado.fase === "esperando_confirmacion") {
-    respuesta = MENSAJES.instruccion_folio;
     setEstado(telefono, { fase: "esperando_listo" });
+    await enviarImagen(telefono, FOLIO_IMAGE_URL, "📋 Aquí un ejemplo — tu folio son los 21 dígitos que empiezan con 84");
+    await enviarMensaje(telefono, MENSAJES.instruccion_folio_texto);
 
   } else if (
     estado.fase === "esperando_listo" &&
     !["puntos", "folio", "premio", "tiendas", "reglas", "ayuda"].includes(comando)
   ) {
-    // En esta fase cualquier mensaje que no sea comando = tiene el folio
-    respuesta = MENSAJES.link_juego;
     setEstado(telefono, { fase: "activo" });
+    await enviarMensaje(telefono, MENSAJES.link_juego);
 
   } else if (estado.fase === "esperando_confirmacion" && !comando) {
-    // Escribió algo raro en lugar de SÍ
-    respuesta = `¿Listo para jugar? Solo responde *SÍ* y comenzamos ⚽`;
+    await enviarMensaje(telefono, `¿Listo para jugar? Solo responde *SÍ* y comenzamos ⚽`);
 
   } else {
-    respuesta = MENSAJES.default;
+    await enviarMensaje(telefono, MENSAJES.default);
   }
-
-  await enviarMensaje(telefono, respuesta);
 });
 
 // ─── HEALTH CHECK ─────────────────────────────────────────────
 app.get("/", (_req, res) => {
-  res.json({ status: "ok", bot: "Gol — Fanáticos del Sabor", version: "2.0" });
+  res.json({ status: "ok", bot: "Gol — Fanáticos del Sabor", version: "2.1" });
 });
 
 // ─── ARRANCAR ─────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Gol v2.0 corriendo en puerto ${PORT}`);
+  console.log(`🚀 Gol v2.1 corriendo en puerto ${PORT}`);
 });
