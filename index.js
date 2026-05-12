@@ -76,8 +76,9 @@ async function logMensaje(telefono, mensaje, direccion, fase) {
 async function upsertUsuario(telefono, fase) {
   const now = new Date().toISOString();
   const busqueda = await atRequest("GET",
-    `${AT_USUARIOS}?filterByFormula=${encodeURIComponent(`{Teléfono}="${telefono}"`)}`
+    `${AT_USUARIOS}?filterByFormula=${encodeURIComponent(`{fldnrcKBlRy1DXZGC}="${telefono}"`)}`
   );
+  if (busqueda?.error) console.error("AT busqueda error:", JSON.stringify(busqueda));
   if (busqueda?.records?.length > 0) {
     const rec = busqueda.records[0];
     const totalActual = rec.fields[F_TOTAL] || 0;
@@ -337,7 +338,7 @@ app.post("/webhook", async (req, res) => {
 
   console.log(`📩 [${telefono}] "${textoOriginal}" | fase: ${estado.fase} | cmd: ${comando}`);
 
-  logMensaje(telefono, textoOriginal, "entrante", estado.fase).catch(() => {});
+  logMensaje(telefono, textoOriginal, "entrante", estado.fase).catch((e) => console.error("AT error:", e.message));
 
   let respuesta;
 
@@ -404,8 +405,8 @@ app.post("/webhook", async (req, res) => {
   }
 
   const faseActual = getEstado(telefono).fase;
-  upsertUsuario(telefono, faseActual).catch(() => {});
-  if (respuesta) logMensaje(telefono, respuesta, "saliente", faseActual).catch(() => {});
+  upsertUsuario(telefono, faseActual).catch((e) => console.error("AT error:", e.message));
+  if (respuesta) logMensaje(telefono, respuesta, "saliente", faseActual).catch((e) => console.error("AT error:", e.message));
 });
 
 // ─── HEALTH CHECK ─────────────────────────────────────────────
@@ -417,5 +418,5 @@ app.get("/", (_req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Gol v3.0 corriendo en puerto ${PORT}`);
-  procesarBroadcasts().catch(() => {});
+  procesarBroadcasts().catch((e) => console.error("AT error:", e.message));
 });
