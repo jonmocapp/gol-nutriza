@@ -22,7 +22,7 @@ function setEstado(telefono, datos) {
 
 // ─── MENSAJES ────────────────────────────────────────────────
 const MENSAJES = {
-  bienvenida: `¡Hola! 👋 Soy *Gol*, tu guía en *Fanáticos del Sabor × Mundial 2026* ⚽🏆
+  bienvenida: `¡Hola! 👋 Soy *Gol*, tu guía en *Fanáticos del Sabor* ⚽🏆
 
 Gracias por tu compra — estás a un paso de ganar premios increíbles: playeras, Nintendo Switch 2, LEGO y hasta un Meet & Greet con La Cotorrisa.
 
@@ -62,7 +62,7 @@ Entra con tu número de teléfono para ver tus puntos y en qué lugar vas 📊`,
 
 Una vez que lo tengas responde *LISTO* 👀`,
 
-  premio: `🏆 *Premios Fanáticos del Sabor × Mundial 2026*
+  premio: `🏆 *Premios Fanáticos del Sabor*
 
 🥇 *1er Lugar* — 20 ganadores
 Meet & Greet con La Cotorrisa 🎉
@@ -72,7 +72,7 @@ Torneo de fútbol estilo "reta" + fotos + autógrafos
 Nintendo Switch 2 🎮
 
 🥉 *3er Lugar* — 13 ganadores
-LEGO Edición Mundial 2026 🧱
+LEGO Edición Especial 2026 🧱
 
 🏅 *4to Lugar* — 40 ganadores
 Merch firmado Cotorrisa (playera o sudadera) 👕
@@ -112,7 +112,7 @@ Juega en *fanaticosdelsabor.com* 🎮`,
 
   reiniciar: `Listo, empezamos de cero 🔄
 
-¡Hola! 👋 Soy *Gol*, tu guía en *Fanáticos del Sabor × Mundial 2026* ⚽
+¡Hola! 👋 Soy *Gol*, tu guía en *Fanáticos del Sabor* ⚽
 
 ¿Estás list@ para jugar? Responde *SÍ* 🙌`,
 
