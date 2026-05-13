@@ -76,7 +76,7 @@ async function logMensaje(telefono, mensaje, direccion, fase) {
 async function upsertUsuario(telefono, fase) {
   const now = new Date().toISOString();
   const busqueda = await atRequest("GET",
-    `${AT_USUARIOS}?filterByFormula=${encodeURIComponent(`{fldnrcKBlRy1DXZGC}="${telefono}"`)}`
+    `${AT_USUARIOS}?returnFieldsByFieldId=true&filterByFormula=${encodeURIComponent(`{fldnrcKBlRy1DXZGC}="${telefono}"`)}`
   );
   if (busqueda?.error) console.error("AT busqueda error:", JSON.stringify(busqueda));
   if (busqueda?.records?.length > 0) {
@@ -267,7 +267,7 @@ async function enviarImagen(telefono, url, caption = "") {
 // ─── BROADCASTS ───────────────────────────────────────────────
 async function procesarBroadcasts() {
   const pendientes = await atRequest("GET",
-    `${AT_BROADCASTS}?filterByFormula=${encodeURIComponent('{Estado}="Listo para enviar"')}`
+    `${AT_BROADCASTS}?returnFieldsByFieldId=true&filterByFormula=${encodeURIComponent('{Estado}="Listo para enviar"')}`
   );
   console.log(`🔍 Broadcasts pendientes: ${pendientes?.records?.length ?? 'error'}`, pendientes?.error ? JSON.stringify(pendientes.error) : '');
   if (!pendientes?.records?.length) return;
@@ -284,7 +284,7 @@ async function procesarBroadcasts() {
     console.log(`📝 PATCH Enviando:`, JSON.stringify(patchRes?.error || patchRes?.id || 'ok'));
 
     const usuarios = await atRequest("GET",
-      `${AT_USUARIOS}?filterByFormula=${encodeURIComponent('{Fase}="activo"')}`
+      `${AT_USUARIOS}?returnFieldsByFieldId=true&filterByFormula=${encodeURIComponent('{Fase}="activo"')}`
     );
 
     let enviados = 0;
