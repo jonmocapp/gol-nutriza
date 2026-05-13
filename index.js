@@ -278,9 +278,10 @@ async function procesarBroadcasts() {
 
     console.log(`📢 Broadcast: "${mensaje.substring(0, 50)}..."`);
 
-    await atRequest("PATCH", `${AT_BROADCASTS}/${broadcast.id}`, {
+    const patchRes = await atRequest("PATCH", `${AT_BROADCASTS}/${broadcast.id}`, {
       fields: { [F_BC_ESTADO]: "Enviando" }
     });
+    console.log(`📝 PATCH Enviando:`, JSON.stringify(patchRes?.error || patchRes?.id || 'ok'));
 
     const usuarios = await atRequest("GET",
       `${AT_USUARIOS}?filterByFormula=${encodeURIComponent('{Fase}="activo"')}`
