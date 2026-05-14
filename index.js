@@ -127,11 +127,11 @@
 //   v3.5: timezone México fix, webhook batching, magic link expiry
 //   v3.4: stuck recovery, EF v4, preview con user_id
 // ════════════════════════════════════════════════════════════════════════════
- 
+
 const express = require("express");
 const crypto = require("crypto");
 const app = express();
- 
+
 // FIX v3.7: limit 1mb
 // FIX v3.8: capturar raw body para HMAC validation
 app.use(express.json({
@@ -141,7 +141,7 @@ app.use(express.json({
     req.rawBody = buf.toString('utf8');
   }
 }));
- 
+
 app.use((err, req, res, next) => {
   if (err.type === 'entity.parse.failed') {
     console.error(`[${new Date().toISOString()}] [WARN] JSON inválido de ${req.ip}`);
@@ -149,9 +149,9 @@ app.use((err, req, res, next) => {
   }
   next(err);
 });
- 
+
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.17";
+const VERSION         = "3.18";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -159,22 +159,22 @@ const AIRTABLE_TOKEN  = process.env.AIRTABLE_TOKEN;
 const SUPABASE_URL    = (process.env.SUPABASE_URL || "https://selxawolsjukpvzisipm.supabase.co").replace(/\/$/, "");
 const SUPABASE_ANON   = process.env.SUPABASE_ANON_KEY;
 const BOT_SECRET      = process.env.SUPABASE_BOT_SECRET;
- 
+
 // FIX v3.8: nuevas env opcionales
 const META_APP_SECRET = process.env.META_APP_SECRET;   // si está, valida HMAC
 const METRICS_SECRET  = process.env.METRICS_SECRET;    // si está, /metrics requiere bearer
- 
+
 // Feature flags Airtable (todos OFF por default)
 const AT_SYNC_LOGS      = process.env.AT_SYNC_LOGS      === 'true';
 const AT_SYNC_FOLIOS    = process.env.AT_SYNC_FOLIOS    === 'true';
 const AT_SYNC_JUGADORES = process.env.AT_SYNC_JUGADORES === 'true';
 const AT_SYNC_RONDAS    = process.env.AT_SYNC_RONDAS    === 'true';
 const AT_SYNC_ALERTAS   = process.env.AT_SYNC_ALERTAS   === 'true';
- 
+
 function isValidSecret(s) {
   return typeof s === 'string' && s.length >= 16 && s !== 'undefined' && s !== 'null';
 }
- 
+
 // ─── AIRTABLE — 9 TABLAS ENGINE V2 ──────────────────────────────────────────
 const AT_BASE = "appDnuaIHpVrXTpz1";
 const AT_TABLES = {
@@ -189,35 +189,35 @@ const AT_TABLES = {
   STATS:      "tblpWnpTmJ3kUrNZJ",
 };
 const FB = { MSG:"fldadSOH0WyWbj622", EST:"fldEBKYSWpfXUseZa", ENV:"fldM0GtUD8Jkdn6Kr", FALL:"fld7Rug1JF1ggtd2R" };
- 
+
 // ─── CONSTANTES ─────────────────────────────────────────────────────────────
 const RONDAS_MAX           = 5;
 const DIAS_VALIDEZ         = 3;
 const SITE_URL             = "https://fanaticosdelsabor.com";
 const IMG_FOLIO            = "https://i.ibb.co/TDP6mnRz/Folio.jpg";
- 
+
 const FETCH_TIMEOUT_MS      = 8000;
 const EDGE_FUNC_TIMEOUT_MS  = 12000;
- 
+
 const SESSION_TTL_MS        = 24 * 60 * 60 * 1000;
 const DEDUP_TTL_MS          =  5 * 60 * 1000;
 const DEDUP_MAX_ENTRIES     = 50_000;
 const USERLOCK_MAX_AGE_MS   = 60 * 1000;
 const CLEANUP_INTERVAL_MS   = 10 * 60 * 1000;
- 
+
 const OUTBOUND_THROTTLE_MS  = 500;
 const INBOUND_MAX_PER_MIN   = 15;
- 
+
 // FIX v3.8: IP rate limit
 const IP_MAX_PER_MIN        = 100;     // de 1 IP por minuto al webhook
- 
+
 // FIX v3.8: Airtable saturation handling
 const AT_QUEUE_FLUSH_MS     = 5000;    // flush cada 5s
 const AT_BATCH_SIZE         = 10;      // Airtable max batch
 const AT_QUEUE_MAX          = 5000;    // drop oldest si excede
 const AT_CIRCUIT_FAILS      = 3;       // 3 fallos consecutivos abren circuit
 const AT_CIRCUIT_RECOVER_MS = 60_000;  // circuit cerrado durante 60s
- 
+
 // ─── ESTADO EN MEMORIA ──────────────────────────────────────────────────────
 const sesiones             = new Map();
 const userLocks            = new Map();
@@ -226,11 +226,11 @@ const outboundLastSend     = new Map();
 const inboundCounter       = new Map();
 const ipCounter            = new Map();  // FIX v3.8
 let   storesCache          = new Map();
- 
+
 let storesCacheReady       = false;
 let broadcastRunning       = false;
 const bootTime             = Date.now();
- 
+
 // FIX v3.8: Airtable queue
 const atQueue = {
   LOGS:      [],
@@ -242,10 +242,10 @@ const atQueue = {
 let atCircuitOpen      = false;
 let atCircuitOpenedAt  = 0;
 let atConsecutiveFails = 0;
- 
+
 const getSesion = (tel) => sesiones.get(tel) || { fase: "desconocido", intentos: 0 };
 const setSesion = (tel, data) => sesiones.set(tel, { ...getSesion(tel), ...data, lastSeen: Date.now() });
- 
+
 // ─── MÉTRICAS ───────────────────────────────────────────────────────────────
 const metrics = {
   startup_at:           new Date().toISOString(),
@@ -305,38 +305,38 @@ const metrics = {
   last_error_at:        null,
   last_error_stage:     null,
 };
- 
+
 function recordError(stage, err) {
   metrics.last_error       = (err?.message || String(err)).substring(0, 300);
   metrics.last_error_at    = new Date().toISOString();
   metrics.last_error_stage = stage;
 }
- 
+
 // ─── LOGGING ────────────────────────────────────────────────────────────────
 function newTrace() {
   return Math.random().toString(16).substring(2, 14).padEnd(12, '0');
 }
- 
+
 const log = {
   info:  (trace, ...args) => console.log(`[${new Date().toISOString()}] [INFO] [${trace || '------------'}]`, ...args),
   warn:  (trace, ...args) => console.warn(`[${new Date().toISOString()}] [WARN] [${trace || '------------'}]`, ...args),
   error: (trace, ...args) => console.error(`[${new Date().toISOString()}] [ERR ] [${trace || '------------'}]`, ...args),
 };
- 
+
 // FIX v3.8: enmascarar magic link en logs (solo prefijo)
 function maskLink(url) {
   if (!url || typeof url !== 'string') return '<no-link>';
   if (url.length < 40) return url.substring(0, 20) + '...';
   return url.substring(0, 40) + '...[REDACTED]';
 }
- 
+
 // ─── FECHA MÉXICO ───────────────────────────────────────────────────────────
 const _dateFmt = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'America/Mexico_City',
   year: 'numeric', month: '2-digit', day: '2-digit',
 });
 function hoyMexico() { return _dateFmt.format(new Date()); }
- 
+
 // ─── HMAC VALIDATION (FIX v3.8) ─────────────────────────────────────────────
 // Meta firma cada webhook con HMAC-SHA256(payload, app_secret). Validar nos
 // protege de ataques con webhooks falsos.
@@ -366,7 +366,7 @@ function verifyMetaSignature(req) {
   if (a.length !== b.length) return { valid: false, reason: 'length_mismatch' };
   return { valid: crypto.timingSafeEqual(a, b), reason: 'hmac_check' };
 }
- 
+
 // ─── IP RATE LIMITING (FIX v3.8) ────────────────────────────────────────────
 function checkIpRate(ip) {
   const now = Date.now();
@@ -378,7 +378,7 @@ function checkIpRate(ip) {
   entry.count++;
   return entry.count <= IP_MAX_PER_MIN;
 }
- 
+
 // ─── FETCH CON TIMEOUT ──────────────────────────────────────────────────────
 async function fetchTimeout(url, opts = {}, ms = FETCH_TIMEOUT_MS) {
   const ctrl = new AbortController();
@@ -393,7 +393,7 @@ async function fetchTimeout(url, opts = {}, ms = FETCH_TIMEOUT_MS) {
     clearTimeout(timer);
   }
 }
- 
+
 // ─── DEDUP LRU ──────────────────────────────────────────────────────────────
 function addToProcessedMsgs(id) {
   if (!id) return;
@@ -409,7 +409,7 @@ function addToProcessedMsgs(id) {
     metrics.dedup_evictions += evicted;
   }
 }
- 
+
 // ─── SUPABASE RATE LIMITER (FIX v3.10) ──────────────────────────────────────
 // PROBLEMA REAL VERIFICADO: si 1000 webhooks llegan simultáneos sin control,
 // abrimos 4000+ conexiones a Supabase (4 RPCs por webhook). Free tier solo
@@ -461,7 +461,7 @@ class SupabaseLimiter {
 }
 // 50 concurrent matches free tier; subir a 200 cuando upgrade a Pro
 const SB_LIMITER = new SupabaseLimiter(50, 1000);
- 
+
 // ─── SUPABASE HELPERS ───────────────────────────────────────────────────────
 async function sbRpc(fnName, params = {}, trace) {
   metrics.rpc_total++;
@@ -517,7 +517,7 @@ async function sbRpc(fnName, params = {}, trace) {
     return null;
   }
 }
- 
+
 // FIX v3.11: variante para RPCs que devuelven TABLE (varias filas).
 // sbRpc() colapsa array a [0] (asume single-row return), pero wa_broadcast_recipients
 // devuelve N filas. Esta función NO colapsa, devuelve el array completo.
@@ -551,7 +551,7 @@ async function sbRpcArray(fnName, params = {}, trace) {
     return [];
   }
 }
- 
+
 async function sbGet(path, trace) {
   metrics.rpc_total++;
   try {
@@ -568,7 +568,7 @@ async function sbGet(path, trace) {
     return null;
   }
 }
- 
+
 async function waAuth(action, params = {}, trace) {
   try {
     const res = await fetchTimeout(`${SUPABASE_URL}/functions/v1/wa-auth`, {
@@ -598,7 +598,7 @@ async function waAuth(action, params = {}, trace) {
     return { error: "edge_function_error", detail: e.message };
   }
 }
- 
+
 // ─── STORES CACHE (doble buffering) ─────────────────────────────────────────
 async function refreshStoresCache() {
   const data = await sbGet("stores?is_active=eq.true&select=sucursal,name,brand&limit=2000");
@@ -613,13 +613,13 @@ async function refreshStoresCache() {
   log.info(null, `🏪 Stores cache: ${storesCache.size} tiendas`);
   return true;
 }
- 
+
 function getStoreFromFolio(folio) {
   if (!storesCacheReady) return null;
   const sucursal = parseInt(folio.substring(2, 7), 10);
   return storesCache.get(sucursal) || null;
 }
- 
+
 // ─── VALIDADOR FOLIO ────────────────────────────────────────────────────────
 // FIX v3.8 #1: limpiar TODO no-numérico, no solo espacios.
 // Casos reales que antes fallaban:
@@ -670,7 +670,7 @@ function validarFormatoFolioLocal(texto) {
   }
   return { ok: false, error: "formato" };
 }
- 
+
 // ─── BLOCKLIST ──────────────────────────────────────────────────────────────
 const BLOCKLIST_RAW = [
   // Profanidad / odio
@@ -690,23 +690,23 @@ const BLOCKLIST_RAW = [
   "soporte","support","help","ayuda_oficial","root","sudo","null","undefined",
   "anonymous","anon","sistema","bot","gol_bot",
 ];
- 
+
 function normalizarLeet(t) {
   return t.toLowerCase()
     .replace(/\$/g,"s").replace(/@/g,"a").replace(/0/g,"o").replace(/1/g,"i")
     .replace(/3/g,"e").replace(/4/g,"a").replace(/5/g,"s").replace(/7/g,"t")
     .replace(/8/g,"b").replace(/!/g,"i").replace(/[-_.]/g,"").replace(/\s+/g,"");
 }
- 
+
 const BLOCKLIST_NORM = new Set(BLOCKLIST_RAW.filter(w => w.length >= 4).map(normalizarLeet));
 const SUFIJOS = ["Gol","FC","MX","Pro","Star","26","Goal","Ace","Crack"];
- 
+
 function generarSugerencia(u) {
   const base = (u || "").replace(/[^a-zA-Z0-9]/g, "").substring(0, 8).trim();
   if (!base) return `GolFan${Math.floor(10 + Math.random() * 90)}`;
   return base.charAt(0).toUpperCase() + base.slice(1).toLowerCase() + SUFIJOS[Math.floor(Math.random()*SUFIJOS.length)];
 }
- 
+
 function validarUsername(u) {
   u = (u || "").trim();
   if (!u || u.length < 3)  return { valido: false, razon: "Mínimo 3 caracteres.", sugerencia: "GolFan26" };
@@ -725,7 +725,7 @@ function validarUsername(u) {
   if (/\d{10}/.test(u)) return { valido: false, razon: "No uses tu teléfono como nombre.", sugerencia: generarSugerencia(u) };
   return { valido: true };
 }
- 
+
 // ─── WHATSAPP API + THROTTLE ────────────────────────────────────────────────
 async function enviar(tel, texto, trace) {
   metrics.send_attempts++;
@@ -735,7 +735,7 @@ async function enviar(tel, texto, trace) {
     await new Promise(r => setTimeout(r, OUTBOUND_THROTTLE_MS - sinceLast));
   }
   outboundLastSend.set(tel, Date.now());
- 
+
   try {
     const res = await fetchTimeout(`https://graph.facebook.com/v19.0/${PHONE_NUMBER_ID}/messages`, {
       method: "POST",
@@ -767,7 +767,7 @@ async function enviar(tel, texto, trace) {
     log.error(trace, `enviar [${tel}] ${e.isTimeout ? 'TIMEOUT' : 'ERR'}:`, e.message);
   }
 }
- 
+
 async function enviarImagen(tel, url, caption = "", trace) {
   const lastSend = outboundLastSend.get(tel) || 0;
   const sinceLast = Date.now() - lastSend;
@@ -785,7 +785,7 @@ async function enviarImagen(tel, url, caption = "", trace) {
     log.error(trace, `enviarImagen [${tel}]:`, e.message);
   }
 }
- 
+
 function checkInboundRate(tel) {
   const now = Date.now();
   const entry = inboundCounter.get(tel);
@@ -800,19 +800,19 @@ function checkInboundRate(tel) {
   }
   return true;
 }
- 
+
 // ─── AIRTABLE QUEUE + BATCHER (FIX v3.8) ─────────────────────────────────────
 // Cuando se activen los feature flags, los stubs encolan en atQueue.
 // El flusher corre cada 5s y manda batches de 10 a Airtable.
 // Si Airtable falla 3 veces, circuit breaker abre 60s.
 // Si queue >5000, drop oldest.
- 
+
 function airtableUrl(path, queryParams = {}) {
   const url = new URL(`https://api.airtable.com/v0/${AT_BASE}/${path}`);
   for (const [k, v] of Object.entries(queryParams)) url.searchParams.set(k, v);
   return url.toString();
 }
- 
+
 function atEnqueue(tableName, fields) {
   // Drop policy: si total queue > MAX, descarta los más viejos
   const total = Object.values(atQueue).reduce((sum, q) => sum + q.length, 0);
@@ -829,7 +829,7 @@ function atEnqueue(tableName, fields) {
   }
   atQueue[tableName].push({ fields, enqueuedAt: Date.now() });
 }
- 
+
 async function atFlushOne(tableName, items) {
   // ============================================================
   // CLAUDE NOTE — Airtable rate limit handling (v3.14+)
@@ -860,7 +860,7 @@ async function atFlushOne(tableName, items) {
   const tableId = AT_TABLES[tableName];
   if (!tableId) return;
   const batch = items.slice(0, AT_BATCH_SIZE);
- 
+
   const MAX_RETRIES = 3;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -869,7 +869,7 @@ async function atFlushOne(tableName, items) {
         headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify({ records: batch.map(b => ({ fields: b.fields })) }),
       });
- 
+
       // 429 → backoff con jitter, no contar como circuit-breaker fail
       if (res.status === 429) {
         metrics.at_429_hits++;
@@ -884,16 +884,16 @@ async function atFlushOne(tableName, items) {
         }
         throw new Error(`Airtable 429 después de ${MAX_RETRIES + 1} intentos`);
       }
- 
+
       if (!res.ok) throw new Error(`Airtable ${res.status}: ${await res.text().catch(() => '?')}`);
- 
+
       // Success: shift batch out de la queue
       atQueue[tableName].splice(0, batch.length);
       atConsecutiveFails = 0;
       metrics.at_flush_success++;
       if (attempt > 0) metrics.at_429_recovered++;
       return;
- 
+
     } catch (e) {
       // Reintentar errores transitorios de red (no 4xx no-429)
       if (attempt < MAX_RETRIES && (e.isTimeout || e.code === 'ECONNRESET' || e.code === 'ETIMEDOUT')) {
@@ -903,7 +903,7 @@ async function atFlushOne(tableName, items) {
         await new Promise(r => setTimeout(r, jitterMs));
         continue;
       }
- 
+
       metrics.at_flush_fail++;
       atConsecutiveFails++;
       log.error(null, `Airtable flush ${tableName} fail #${atConsecutiveFails}:`, e.message);
@@ -917,7 +917,7 @@ async function atFlushOne(tableName, items) {
     }
   }
 }
- 
+
 async function atFlush() {
   // Solo flush si hay feature flags activos
   const anyFlag = AT_SYNC_LOGS || AT_SYNC_FOLIOS || AT_SYNC_JUGADORES || AT_SYNC_RONDAS || AT_SYNC_ALERTAS;
@@ -928,7 +928,7 @@ async function atFlush() {
     await atFlushOne(tableName, atQueue[tableName]);
   }
 }
- 
+
 // ─── STUBS DE INTEGRACIÓN AIRTABLE (activables por feature flags) ───────────
 function atLog(tel, mensaje, direccion, fase) {
   if (!AT_SYNC_LOGS) return;
@@ -940,7 +940,7 @@ function atLog(tel, mensaje, direccion, fase) {
     "fld0ByXnIf4DjADCG": fase || '',
   });
 }
- 
+
 function atAlerta(tipo, referencia, descripcion) {
   if (!AT_SYNC_ALERTAS) return;
   atEnqueue('ALERTAS', {
@@ -952,7 +952,7 @@ function atAlerta(tipo, referencia, descripcion) {
     "fld4fKaUGrPm4nuL5": false,
   });
 }
- 
+
 // ─── MENSAJES (igual que v3.7) ──────────────────────────────────────────────
 // ─── MENSAJES AL USUARIO — DISEÑO PSICOLÓGICO v3.9 ──────────────────────────
 // Cada mensaje está calculado para GUIAR el comportamiento del usuario hacia
@@ -979,241 +979,241 @@ function atAlerta(tipo, referencia, descripcion) {
 //   I. Borrar chat         → "Tu progreso está seguro, no necesitas reiniciar"
 //   J. Mensajes ambiguos   → comandos exactos en cada mensaje
 //   K. Esperar humano      → "Soy un bot, pero estoy para ayudarte"
- 
+
 const M = {
   bienvenidaNuevo: () =>
 `¡Hola! ⚽ Soy *Gol*, tu guía oficial en *Fanáticos del Sabor*.
- 
+
 Para registrarte y empezar a jugar necesito el *folio de tu ticket* 🎫
- 
+
 📍 *Dónde encontrarlo:*
 • Está en la parte de arriba del ticket
 • Empieza con *84* y tiene *21 dígitos*
 • Cópialo directo del ticket (no me mandes la foto, solo los números)
- 
+
 ⏱️ *Importante:* tu ticket debe ser de los últimos *${DIAS_VALIDEZ} días*.
- 
+
 ¡Mándamelo cuando lo tengas!`,
- 
+
   bienvenidaConocido: (username, rondasHoy) =>
 `¡Qué onda *${username}*! 👋
- 
+
 Hoy llevas *${rondasHoy}/${RONDAS_MAX}* rondas jugadas.
 ${rondasHoy < RONDAS_MAX
     ? `¿Tienes un folio nuevo? Mándamelo 🎫\nTe quedan *${RONDAS_MAX - rondasHoy}* rondas hoy.\n\n💡 También puedes agregar folios desde *${SITE_URL}* — quedan sincronizados.`
     : "Ya completaste tus rondas de hoy 🏆\nMañana a la *medianoche (hora CDMX)* se reinician."}`,
- 
+
   // v3.14: mensaje corto para atajo (botón web "Ingresar código" / "Nueva ronda")
   atajoConocido: (username, rondasHoy) =>
 `Mándame el folio, *${username}* 🎫
- 
+
 ${rondasHoy < RONDAS_MAX
     ? `Llevas *${rondasHoy}/${RONDAS_MAX}* rondas hoy. Te quedan *${RONDAS_MAX - rondasHoy}*.`
     : `Ya jugaste tus *${RONDAS_MAX} rondas* de hoy 🏆\nMañana a *medianoche CDMX* se reinician.`}`,
- 
+
   folioOkPideNombre: (storeName, brand) => {
     const tienda = storeName ? `*${brand}* — ${storeName}` : "*Grupo Nutriza*";
     return `✅ *¡Folio válido!* Compra registrada de ${tienda}.
- 
+
 🎯 *Último paso para empezar:* elige tu *nombre para el leaderboard*.
- 
+
 📝 *Reglas del nombre:*
 • De *3 a 20 caracteres*
 • Solo *letras, números y _* (sin espacios ni acentos)
 • Es un *apodo* — no tu nombre real
- 
+
 Tip: una vez registrado, ese nombre te identifica para siempre. Elige uno que te represente 🏆`;
   },
- 
+
   usernameInvalido: (razon, sugerencia) =>
 `Ese nombre no funciona 😅
 _${razon}_
- 
+
 ${sugerencia ? `¿Qué tal *${sugerencia}*? O escribe otro.` : "Escribe otro nombre."}`,
- 
+
   usernameTomado: (sugerencia) =>
 `Ese nombre ya está ocupado 😅
 Cada nombre es único — solo una persona puede tenerlo.
- 
+
 ¿Qué tal *${sugerencia}*? O escribe otro distinto.`,
- 
+
   // CRÍTICO: este mensaje previene que el usuario comparta el link
   registroCompleto: (username, magicLink, rondasHoy) =>
 `¡Bienvenido, *${username}*! 🎉
 Ya eres oficialmente *Fanático del Sabor*.
- 
+
 🎮 *Toca este link para empezar a jugar:*
 ${magicLink}
- 
+
 ⚠️ *Importante — solo para TI:*
 🔒 Este link es *único y personal*. Si alguien más lo abre, tu cuenta se compromete.
 ⏱️ Expira en *1 hora*. Si no entras a tiempo, mándame otro folio para generar uno nuevo.
 🎯 Funciona *una sola vez*.
- 
+
 Vas en la *ronda ${rondasHoy} de ${RONDAS_MAX}* hoy 🎮`,
- 
+
   folioAdicional: (username, rondaNum, magicLink) =>
 `✅ Folio registrado, *${username}*.
 Vas en la *ronda ${rondaNum} de ${RONDAS_MAX}* hoy.
- 
+
 🎮 *Tu link para esta ronda:*
 ${magicLink}
- 
+
 ⏱️ Úsalo en la próxima *hora*, solo *una vez*, solo *tú*.
- 
+
 ${rondaNum < RONDAS_MAX
     ? `Te quedan *${RONDAS_MAX - rondaNum}* rondas para hoy 💪`
     : `¡Última ronda de hoy! 🔥 Mañana a *medianoche CDMX* se reinician.`}`,
- 
+
   maxRondas: (username) =>
 `Ya jugaste tus *${RONDAS_MAX} rondas* de hoy, *${username}* 🏆
 Eres un *Fanático* dedicado.
- 
+
 🌅 *Se reinician* mañana a la *medianoche (hora CDMX)*.
 Mientras tanto, ve tu puntaje en:
 🔗 ${SITE_URL}
- 
+
 💡 Tip: la *hora de tu celular no importa*, el reinicio es a medianoche de México.`,
- 
+
   // Mensajes de error de folio — cada uno guía al user lejos de comportamiento problemático
   folioError: (error) => {
     const msgs = {
       formato:         `Hmm, ese mensaje no tiene un folio válido 🤔
- 
+
 Lo que necesito:
 • *21 dígitos* exactos
 • Empieza con *84*
 • Cópialos directo del ticket
- 
+
 ❌ *No me mandes:* la foto del ticket, audios, ni el ticket completo escrito.
 ✅ *Sí:* solo los 21 números.`,
- 
+
       prefijo:         `Tu folio debe empezar con *84* 📋
 Si empieza con otro número, no es de las marcas participantes.
- 
+
 Si lo copiaste mal, revisa el ticket e inténtalo de nuevo.`,
- 
+
       invalid_format:  `El folio no tiene formato correcto.
 Debe ser *21 dígitos* exactos, empezando con *84*.
- 
+
 Si copiaste el ticket entero, mándame *solo* los dígitos.`,
- 
+
       invalid_empresa: `Ese folio no es de una marca participante.
 Solo aceptamos folios de: *Nutrisa*, *Moyo*, *Cielito Café*, *Chilim Balam*.`,
- 
+
       invalid_date:    `La fecha en ese folio no es válida 🤔
 Revisa que copiaste todos los dígitos correctamente.`,
- 
+
       unknown_store:   `Esa tienda no aparece en mi lista de participantes 🧐
 ¿Es un ticket de Nutrisa, Moyo, Cielito Café o Chilim Balam?
 Si sí: el ticket podría estar dañado, intenta con otro.`,
- 
+
       expired:         `Ese ticket tiene más de *${DIAS_VALIDEZ} días* y ya no es válido 📅
- 
+
 💡 Tip: la próxima vez, mándame tu folio el *mismo día* que compras para aprovechar al máximo.`,
- 
+
       not_yet_valid:   `La fecha del ticket todavía no llega 🤔
 Revisa la fecha en tu ticket — debe ser de *hoy o ayer*.`,
- 
+
       date_too_early:  `Ese ticket es anterior al inicio de la campaña 📅
 *Fanáticos del Sabor* arrancó hace poco. Solo cuentan tickets desde entonces.`,
- 
+
       campaign_ended: `Ya terminó *Fanáticos del Sabor* 🏁
 La campaña concluyó. ¡Gracias por jugar! ⚽
 Mira los ganadores en *${SITE_URL}*.`,
- 
+
       folio_too_low:   `Ese folio es de antes del inicio de la campaña 📋
 Solo se aceptan compras hechas durante *Fanáticos del Sabor*.`,
- 
+
       already_used:    `Ese folio *ya fue canjeado* 🔒
 Cada folio se usa *solo una vez*, por una sola persona.
- 
+
 ⚠️ Si compartiste tu folio con alguien, esa persona pudo haberlo usado antes que tú.
 👉 Tu folio = tu llave. Nunca lo compartas, ni siquiera con amigos.
- 
+
 ¿Tienes otro ticket? Mándame ese folio.`,
- 
+
       ticket_limit_reached:
 `Ya jugaste tus *${RONDAS_MAX} rondas* de hoy 🏆
 Cada persona tiene *${RONDAS_MAX} rondas diarias*.
- 
+
 🌅 Se reinician a *medianoche (hora CDMX)*.
 La hora de tu celular no importa — siempre es hora México.`,
     };
     return msgs[error] || `No pude validar ese folio. ¿Revisas que esté completo y mándamelo de nuevo?`;
   },
- 
+
   errorRegistro: () =>
 `Tuve un problema técnico al registrarte 😞
 *No es culpa tuya.* Intenta de nuevo en 1-2 minutos.
- 
+
 Si el problema persiste, escribe *AYUDA*.`,
- 
+
   errorEdgeFunction: () =>
 `Estamos teniendo un problema temporal 🙏
 Inténtalo en 1-2 minutos.
- 
+
 Si sigue fallando, escribe *AYUDA*.`,
- 
+
   // FIX v3.9: mensaje cuando bot está saturado (Supabase rate limit)
   servidorSaturado: () =>
 `Mucha gente está jugando ahora mismo 🔥
 Inténtalo en *30 segundos*. Tu folio no se ha perdido.
- 
+
 (No me lo reenvíes, solo espera. Yo te respondo cuando se libere.)`,
- 
+
   ayuda: (u) =>
 `${u ? `Soy *Gol*, tu guía en *Fanáticos del Sabor* 👋` : "Soy *Gol*, tu guía en *Fanáticos del Sabor* 👋"}
 ${u ? `Llevo el registro de *${u}*.` : ''}
- 
+
 🤖 *Soy un bot*, pero estoy aquí para ayudarte. Comandos:
- 
+
 🎫 *Mándame un folio* — Para jugar una ronda
 📊 *PUNTOS* — Tu puntaje en el leaderboard
 🏆 *PREMIOS* — Qué puedes ganar
 🏪 *TIENDAS* — Marcas que participan
 📋 *REGLAS* — Cómo funciona
 🔍 *FOLIO* — Dónde encontrar tu folio en el ticket
- 
+
 ⚠️ *No proceso:* fotos, audios, videos, ni stickers.`,
- 
+
   puntos:  () =>
 `📊 Ve tu puntaje aquí:
 ${SITE_URL}
- 
+
 Entra con el último link que te envié.
 (Si expiró, mándame un folio nuevo y te genero otro.)`,
- 
+
   premios: () =>
 `🏆 *Premios Fanáticos del Sabor*
- 
+
 🥇 *1er Lugar* — 20 ganadores
 Meet & Greet con *La Cotorrisa* 🎉
- 
+
 🥈 *2do Lugar* — 8 ganadores
 Nintendo Switch 2 🎮
- 
+
 🥉 *3er Lugar* — 13 ganadores
 LEGO Edición Especial 🧱
- 
+
 🏅 *4to Lugar* — 40 ganadores
 Merch firmado por La Cotorrisa 👕
- 
+
 💪 Cada ronda suma puntos. Juega *${RONDAS_MAX} rondas diarias* para maximizar.`,
- 
+
   tiendas: () =>
 `🏪 *Marcas participantes:*
- 
+
 🥑 *Nutrisa*
 🍦 *Moyo*
 ☕ *Cielito Café*
 🌮 *Chilim Balam*
- 
+
 Compra en cualquiera, guarda tu ticket, y mándame el folio en *máximo ${DIAS_VALIDEZ} días*.`,
- 
+
   reglas:  () =>
 `📋 *Reglas:*
- 
+
 🎫 *1 folio = 1 ronda* de 4 minijuegos
 🎮 Máximo *${RONDAS_MAX} rondas por día*
 📅 Ticket válido por *${DIAS_VALIDEZ} días* desde la fecha de compra
@@ -1221,47 +1221,47 @@ Compra en cualquiera, guarda tu ticket, y mándame el folio en *máximo ${DIAS_V
 🌅 Las rondas se reinician a *medianoche hora CDMX*
 🔒 Cada folio se canjea *solo una vez* — no lo compartas
 👤 Un número de WhatsApp = una cuenta`,
- 
+
   dondeFolio: () =>
 `📋 *Tu folio está en la parte de arriba del ticket* 🧾
- 
+
 • Empieza con *84*
 • Tiene *21 dígitos*
 • Está antes de los productos
- 
+
 ⚠️ Si me mandas:
 ❌ Foto del ticket → no puedo leerla
 ❌ El ticket completo escrito → solo necesito los 21 dígitos
 ✅ Solo los 21 números → ¡perfecto!`,
- 
+
   gracias: (u) =>
 `¡Con gusto${u ? `, *${u}*` : ""}! ⚽
 Cualquier duda, escribe *AYUDA*.`,
- 
+
   noTexto: () =>
 `No puedo leer fotos, audios ni videos 😅
 Soy un bot de texto.
- 
+
 Si querías mandar tu folio:
 ✅ Cópialo directo del ticket (los *21 números* que empiezan con *84*)
 ✅ Pégalo en este chat
- 
+
 Escribe *AYUDA* para ver todo lo que puedo hacer.`,
- 
+
   pedirFolio: () =>
 `Para continuar necesito tu *folio* 🎫
- 
+
 📍 *Cómo encontrarlo:*
 • 21 dígitos
 • Empieza con *84*
 • Arriba del ticket
- 
+
 ✅ *Cópialo y pégalo directo* — no me mandes la foto.
- 
+
 ¿Dudas? Escribe *FOLIO* para que te explique mejor.
 ¿Necesitas otra cosa? Escribe *AYUDA*.`,
 };
- 
+
 // ─── DETECCIÓN DE INTENCIÓN ─────────────────────────────────────────────────
 function detectarIntención(texto) {
   // ============================================================
@@ -1294,22 +1294,22 @@ function detectarIntención(texto) {
   if (inc("HOLA","BUENAS","HEY","SALUDOS","JUGAR")) return "saludo";
   return null;
 }
- 
+
 async function cargarSesion(tel, trace) {
   const data = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
   if (data && data.found) { metrics.get_profile_found++; return data; }
   metrics.get_profile_notfound++;
   return null;
 }
- 
+
 // ─── LÓGICA PRINCIPAL (igual que v3.7, con logging de magic link enmascarado) ─
 async function procesarMensajeCore(tel, texto, trace) {
   // FIX v3.8: log entrante a Airtable (si flag activo)
   atLog(tel, texto, 'in', getSesion(tel).fase);
- 
+
   const intención = detectarIntención(texto);
   let s = getSesion(tel);
- 
+
   if (!s.cargado) {
     const jugador = await cargarSesion(tel, trace);
     if (jugador) {
@@ -1346,18 +1346,18 @@ async function procesarMensajeCore(tel, texto, trace) {
     }
     s = getSesion(tel);
   }
- 
+
   const username = s.username || null;
   const userId   = s.userId   || null;
   const hoy      = hoyMexico();
   let rondasHoy  = s.fechaReset === hoy ? (s.rondasHoy || 0) : 0;
- 
+
   if (s.fechaReset && s.fechaReset !== hoy && userId) {
     rondasHoy = 0;
     setSesion(tel, { rondasHoy: 0, fechaReset: hoy });
     sbRpc("update_wa_profile", { p_phone: tel, p_user_id: userId, p_rondas_hoy: 0, p_fecha_reset: hoy }, trace).catch(() => {});
   }
- 
+
   if (intención === "reiniciar") {
     setSesion(tel, { fase: username ? "activo" : "nuevo", intentos: 0, pendingFolio: null });
     return enviar(tel, username ? M.bienvenidaConocido(username, rondasHoy) : M.bienvenidaNuevo(), trace);
@@ -1372,14 +1372,14 @@ async function procesarMensajeCore(tel, texto, trace) {
     await enviarImagen(tel, IMG_FOLIO, "📋 Tu folio: 21 dígitos que empiezan con 84", trace);
     return enviar(tel, M.dondeFolio(), trace);
   }
- 
+
   if (intención === "saludo") {
     if (username) return enviar(tel, M.bienvenidaConocido(username, rondasHoy), trace);
     setSesion(tel, { fase: "esperando_folio" });
     await enviarImagen(tel, IMG_FOLIO, "📋 Tu folio: 21 dígitos que empiezan con 84", trace);
     return enviar(tel, M.bienvenidaNuevo(), trace);
   }
- 
+
   // ============================================================
   // CLAUDE NOTE — Atajo desde botones del website (v3.14+)
   // ============================================================
@@ -1399,7 +1399,7 @@ async function procesarMensajeCore(tel, texto, trace) {
     await enviarImagen(tel, IMG_FOLIO, "📋 Tu folio: 21 dígitos que empiezan con 84", trace);
     return enviar(tel, M.bienvenidaNuevo(), trace);
   }
- 
+
   if (s.fase === "esperando_username") {
     // ============================================================
     // CLAUDE NOTE — Folio durante esperando_username (v3.16)
@@ -1427,14 +1427,14 @@ async function procesarMensajeCore(tel, texto, trace) {
         trace
       );
     }
- 
+
     const nombrePropuesto = texto.trim().substring(0, 20);
     const val = validarUsername(nombrePropuesto);
     if (!val.valido) return enviar(tel, M.usernameInvalido(val.razon, val.sugerencia), trace);
- 
+
     log.info(trace, `→ register username="${nombrePropuesto}" phone=${tel}`);
     const regRes = await waAuth("register", { phone: tel, username: nombrePropuesto }, trace);
- 
+
     if (regRes?.error === "username_taken") return enviar(tel, M.usernameTomado(generarSugerencia(nombrePropuesto)), trace);
     // FIX v3.13: Edge Function v5 rechaza profanity contra tabla profanity_words (2,191 palabras).
     // Single source of truth = mismo blocklist que el website RegisterPage.
@@ -1460,24 +1460,24 @@ async function procesarMensajeCore(tel, texto, trace) {
       setSesion(tel, { fase: "esperando_folio", pendingFolio: null });
       return enviar(tel, M.errorRegistro(), trace);
     }
- 
+
     const finalUsername = regRes.username || nombrePropuesto;
     const newUserId     = regRes.user_id;
     const pendFolio     = s.pendingFolio;
- 
+
     if (!pendFolio) {
       log.warn(trace, "Sin pendingFolio en esperando_username");
       setSesion(tel, { fase: "esperando_folio" });
       return enviar(tel, `Hubo un problema. Mándame tu folio de nuevo 🎫`, trace);
     }
- 
+
     // CLAUDE NOTE: igual que en flujo de re-claim (v3.16), la SQL function hace
     // incremento atómico. Pasamos null para que use sus propios COALESCE+1.
     const claimRes = await sbRpc("wa_claim_ticket", {
       p_code: pendFolio, p_user_id: newUserId, p_phone: tel,
       p_rondas_hoy: null, p_rondas_total: null, p_fecha_reset: hoy,
     }, trace);
- 
+
     if (!claimRes?.success) {
       metrics.claim_fail++;
       log.error(trace, "Claim fallido tras register:", JSON.stringify(claimRes));
@@ -1485,7 +1485,7 @@ async function procesarMensajeCore(tel, texto, trace) {
       return enviar(tel, M.folioError(claimRes?.error || "already_used"), trace);
     }
     metrics.claim_ok++;
- 
+
     // Re-leer profile post-claim para tener los valores reales que DB calculó.
     // En registro nuevo, debe ser rondasHoy=1, rondasTotal=1 (primer claim del user).
     let rondaNum = 1;
@@ -1495,13 +1495,43 @@ async function procesarMensajeCore(tel, texto, trace) {
       rondaNum = postProfile.wa_rondas_hoy || 1;
       totalNum = postProfile.wa_rondas_total || 1;
     }
- 
+
     setSesion(tel, {
       fase: "activo", username: finalUsername, userId: newUserId,
       rondasHoy: rondaNum, rondasTotal: totalNum, fechaReset: hoy,
       pendingFolio: null, intentos: 0,
     });
- 
+
+    // v3.17: sync a Airtable (async, no bloquea respuesta al user)
+    const ahora = new Date().toISOString();
+    if (AT_SYNC_JUGADORES) atEnqueue("JUGADORES", {
+      fldZBWrZplpRablKb: `+${tel}`,
+      fldZZQ9SENjSGwRwB: finalUsername,
+      fldjhoXN41tMuSUpl: "activo",
+      fldkPg41ius04MuUK: rondaNum,
+      fldzQHOAWwlkUV6Kt: totalNum,
+      fldaCpQQLMJYgd3Q9: ahora,
+      fldML4hFVSS0XUcXR: ahora,
+      fldDL3hKFCrgBrtVR: hoy,
+      fldKfCxb4kIbIKzkI: pendFolio,
+    });
+    if (AT_SYNC_FOLIOS) atEnqueue("FOLIOS", {
+      fldXTWLuxNEfW662q: pendFolio,
+      fldyy9XLB7wckFpTa: `+${tel}`,
+      fldxjgMJgBVF9DuSZ: pendFolio.substring(2, 7),
+      fld83GKJK72uE2tkN: `20${pendFolio.substring(7,9)}-${pendFolio.substring(9,11)}-${pendFolio.substring(11,13)}`,
+      fldgHP2kgPDxpprN2: ahora,
+      fldzOPkSCihsFeE2k: true,
+      fld36uU97d5j5zMYv: 1,
+    });
+    if (AT_SYNC_RONDAS) atEnqueue("RONDAS", {
+      fld2buT3RXP1vexTW: `+${tel}`,
+      fldRYI7XShhvhsJHg: pendFolio,
+      fldTAnP4CpDhq34Mq: ahora,
+      fldh4r8GDV6jr00wp: rondaNum,
+      fldDjlIC66SIUbsLZ: "WhatsApp",
+    });
+
     if (!regRes.magic_link) {
       log.warn(trace, `Magic link no generado, fallback URL`);
       return enviar(tel, `¡Listo *${finalUsername}*! 🎉\n\nVe a *${SITE_URL}* para entrar a jugar.\nRonda *${rondaNum}* de *${RONDAS_MAX}* hoy 🎮`, trace);
@@ -1509,7 +1539,7 @@ async function procesarMensajeCore(tel, texto, trace) {
     log.info(trace, `Magic link generado: ${maskLink(regRes.magic_link)}`);
     return enviar(tel, M.registroCompleto(finalUsername, regRes.magic_link, rondaNum), trace);
   }
- 
+
   const looksLikeFolio = /^\d{10,}$/.test(texto.replace(/\s/g, ""));
   if (intención === "folio_input" || (s.fase === "esperando_folio" && looksLikeFolio)) {
     const num = texto.replace(/\s/g, "");
@@ -1521,7 +1551,7 @@ async function procesarMensajeCore(tel, texto, trace) {
     const folio = localVal.folio;
     const previewParams = userId ? { p_code: folio, p_user_id: userId } : { p_code: folio };
     const preview = await sbRpc("preview_ticket", previewParams, trace);
- 
+
     // FIX v3.10: si preview es null (no es {success:false}), Supabase saturado
     if (preview === null) {
       log.warn(trace, "preview_ticket null — Supabase posiblemente saturado");
@@ -1533,7 +1563,7 @@ async function procesarMensajeCore(tel, texto, trace) {
       return enviar(tel, M.folioError(preview?.error || "invalid_format"), trace);
     }
     metrics.preview_ticket_ok++;
- 
+
     if (username && userId) {
       // ============================================================
       // CLAUDE NOTE — Sync web ↔ WhatsApp antes de claim (v3.12+)
@@ -1555,7 +1585,7 @@ async function procesarMensajeCore(tel, texto, trace) {
           ? (freshProfile.wa_rondas_hoy || 0)
           : 0;
         const dbRondasTotal = freshProfile.wa_rondas_total || 0;
- 
+
         // Sincronización defensiva: DB siempre gana si tiene valores más altos
         // (el web pudo haber adelantado al bot).
         if (dbRondasHoy > rondasHoy || dbRondasTotal > localRondasTotal) {
@@ -1565,9 +1595,9 @@ async function procesarMensajeCore(tel, texto, trace) {
           setSesion(tel, { rondasHoy, rondasTotal: localRondasTotal });
         }
       }
- 
+
       if (rondasHoy >= RONDAS_MAX) return enviar(tel, M.maxRondas(username), trace);
- 
+
       // ============================================================
       // CLAUDE NOTE — Atomic counter handling (v3.16)
       // ============================================================
@@ -1588,13 +1618,13 @@ async function procesarMensajeCore(tel, texto, trace) {
         // ya no los usa (v3.16 migración wa_claim_ticket_atomic_counter).
         p_rondas_hoy: null, p_rondas_total: null, p_fecha_reset: hoy,
       }, trace);
- 
+
       if (!claimRes?.success) {
         metrics.claim_fail++;
         return enviar(tel, M.folioError(claimRes?.error || "already_used"), trace);
       }
       metrics.claim_ok++;
- 
+
       // Re-leer profile FRESH para tener los contadores REALES post-claim.
       // Esto es importante porque DB hizo el incremento atómico, no nosotros.
       let postClaimRondasHoy = rondasHoy + 1;  // fallback si el re-read falla
@@ -1607,7 +1637,26 @@ async function procesarMensajeCore(tel, texto, trace) {
         postClaimRondasTotal = postProfile.wa_rondas_total || postClaimRondasTotal;
       }
       setSesion(tel, { rondasHoy: postClaimRondasHoy, rondasTotal: postClaimRondasTotal, intentos: 0 });
- 
+
+      // v3.17: sync a Airtable (async, no bloquea respuesta al user)
+      const ahoraStr = new Date().toISOString();
+      if (AT_SYNC_FOLIOS) atEnqueue("FOLIOS", {
+        fldXTWLuxNEfW662q: folio,
+        fldyy9XLB7wckFpTa: `+${tel}`,
+        fldxjgMJgBVF9DuSZ: folio.substring(2, 7),
+        fld83GKJK72uE2tkN: `20${folio.substring(7,9)}-${folio.substring(9,11)}-${folio.substring(11,13)}`,
+        fldgHP2kgPDxpprN2: ahoraStr,
+        fldzOPkSCihsFeE2k: true,
+        fld36uU97d5j5zMYv: postClaimRondasHoy,
+      });
+      if (AT_SYNC_RONDAS) atEnqueue("RONDAS", {
+        fld2buT3RXP1vexTW: `+${tel}`,
+        fldRYI7XShhvhsJHg: folio,
+        fldTAnP4CpDhq34Mq: ahoraStr,
+        fldh4r8GDV6jr00wp: postClaimRondasHoy,
+        fldDjlIC66SIUbsLZ: "WhatsApp",
+      });
+
       const linkRes = await waAuth("get_link", { phone: tel }, trace);
       if (!linkRes?.magic_link) {
         return enviar(tel, `✅ ¡Folio registrado, *${username}*!\nVe a *${SITE_URL}* para jugar.\nRonda *${postClaimRondasHoy}* de *${RONDAS_MAX}* hoy.`, trace);
@@ -1615,22 +1664,22 @@ async function procesarMensajeCore(tel, texto, trace) {
       log.info(trace, `Magic link generado: ${maskLink(linkRes.magic_link)}`);
       return enviar(tel, M.folioAdicional(username, postClaimRondasHoy, linkRes.magic_link), trace);
     }
- 
+
     const storeInfo = getStoreFromFolio(folio);
     setSesion(tel, { fase: "esperando_username", pendingFolio: folio, intentos: 0 });
     return enviar(tel, M.folioOkPideNombre(storeInfo?.name, storeInfo?.brand || "Grupo Nutriza"), trace);
   }
- 
+
   if (s.fase === "activo" && username) {
     return enviar(tel, `¿Tienes un folio nuevo, *${username}*? Mándamelo 🎫\n\nO escribe *AYUDA* si necesitas algo.`, trace);
   }
   if (s.fase === "esperando_folio") return enviar(tel, M.pedirFolio(), trace);
- 
+
   setSesion(tel, { fase: "esperando_folio" });
   await enviarImagen(tel, IMG_FOLIO, "📋 Tu folio: 21 dígitos que empiezan con 84", trace);
   return enviar(tel, M.bienvenidaNuevo(), trace);
 }
- 
+
 async function procesarMensaje(tel, texto, trace) {
   const prev = userLocks.get(tel);
   const prevPromise = prev?.promise || Promise.resolve();
@@ -1644,7 +1693,7 @@ async function procesarMensaje(tel, texto, trace) {
   if (userLocks.get(tel)?.promise === next) userLocks.delete(tel);
   metrics.msg_processed++;
 }
- 
+
 // ─── BROADCASTS ─────────────────────────────────────────────────────────────
 async function procesarBroadcasts() {
   if (broadcastRunning) { metrics.broadcast_skipped++; return; }
@@ -1666,18 +1715,18 @@ async function procesarBroadcasts() {
     }
     const data = await res.json().catch(() => ({}));
     if (!data?.records?.length) return;
- 
+
     for (const bc of data.records) {
       const msg = bc.fields[FB.MSG];
       if (!msg) continue;
       log.info(null, `📢 Broadcast: "${msg.substring(0, 40)}..."`);
- 
+
       await fetchTimeout(airtableUrl(`${AT_TABLES.BROADCASTS}/${bc.id}`), {
         method: "PATCH",
         headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify({ fields: { [FB.EST]: "Enviando" } }),
       });
- 
+
       // FIX v3.11: usar RPC SECURITY DEFINER en vez de query directa.
       // Mohamed agregó RLS en profiles que bloquea anon de leer wa_users.
       // sbGet(profiles?wa_registered=eq.true...) → permission denied desde v3.10.
@@ -1695,7 +1744,7 @@ async function procesarBroadcasts() {
       }
       metrics.broadcast_sent += ok;
       metrics.broadcast_failed += fail;
- 
+
       await fetchTimeout(airtableUrl(`${AT_TABLES.BROADCASTS}/${bc.id}`), {
         method: "PATCH",
         headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
@@ -1710,7 +1759,7 @@ async function procesarBroadcasts() {
     broadcastRunning = false;
   }
 }
- 
+
 async function rescatarBroadcastsHuerfanos() {
   try {
     const url = airtableUrl(AT_TABLES.BROADCASTS, {
@@ -1730,7 +1779,7 @@ async function rescatarBroadcastsHuerfanos() {
     }
   } catch (e) { log.error(null, "rescatar:", e.message); }
 }
- 
+
 // ─── CLEANUP ────────────────────────────────────────────────────────────────
 function cleanupMaps() {
   const now = Date.now();
@@ -1759,7 +1808,7 @@ function cleanupMaps() {
     log.info(null, `🧹 Cleanup: sesiones=${cs}, locks=${cl}, dedup=${cd}, out=${co}, in=${ci}, ip=${cip}`);
   }
 }
- 
+
 // ─── WEBHOOK CON HMAC VALIDATION (FIX v3.8) ─────────────────────────────────
 app.get("/webhook", (req, res) => {
   const { "hub.mode": m, "hub.verify_token": t, "hub.challenge": c } = req.query;
@@ -1770,7 +1819,7 @@ app.get("/webhook", (req, res) => {
     res.sendStatus(403);
   }
 });
- 
+
 app.post("/webhook", async (req, res) => {
   // FIX v3.8 #1: IP rate limit
   const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip || 'unknown';
@@ -1779,7 +1828,7 @@ app.post("/webhook", async (req, res) => {
     log.warn(null, `🚫 IP rate limit: ${ip}`);
     return res.status(429).send('rate limited');
   }
- 
+
   // FIX v3.8 #2: HMAC validation
   const sig = verifyMetaSignature(req);
   if (!sig.valid) {
@@ -1787,15 +1836,15 @@ app.post("/webhook", async (req, res) => {
     log.warn(null, `🚫 HMAC invalid (${sig.reason}) from ${ip}`);
     return res.status(401).send('unauthorized');
   }
- 
+
   res.sendStatus(200);
   metrics.webhook_total++;
- 
+
   if (!req.body) {
     metrics.webhook_invalid_json++;
     return;
   }
- 
+
   const entries = req.body.entry || [];
   for (const entry of entries) {
     const changes = entry?.changes || [];
@@ -1815,13 +1864,13 @@ app.post("/webhook", async (req, res) => {
           continue;
         }
         addToProcessedMsgs(msg.id);
- 
+
         if (msg.type !== "text") {
           metrics.webhook_non_text++;
           enviar(msg.from, M.noTexto(), trace).catch(() => {});
           continue;
         }
- 
+
         // ============================================================
         // CLAUDE NOTE — Phone normalization (v3.16)
         // ============================================================
@@ -1847,11 +1896,11 @@ app.post("/webhook", async (req, res) => {
           log.warn(trace, `🚫 [${tel}] inbound rate limit`);
           continue;
         }
- 
+
         metrics.webhook_text++;
         const texto = msg.text.body.trim();
         log.info(trace, `📩 [${tel}] "${texto.substring(0, 40)}" fase=${getSesion(tel).fase}`);
- 
+
         procesarMensaje(tel, texto, trace).catch(e => {
           metrics.msg_errors++;
           recordError("procesarMensaje", e);
@@ -1861,7 +1910,7 @@ app.post("/webhook", async (req, res) => {
     }
   }
 });
- 
+
 // ─── ENDPOINTS DE MONITORING ────────────────────────────────────────────────
 app.get("/", (_req, res) => res.json({
   status:       "ok",
@@ -1871,7 +1920,7 @@ app.get("/", (_req, res) => res.json({
   sesiones:     sesiones.size,
   stores_ready: storesCacheReady,
 }));
- 
+
 // ─── HEALTH ENDPOINTS — un check por cada órgano del pipeline ────────────────
 // FIX v3.13: /health ahora chequea cada componente independientemente.
 // Si algo se rompe, sabemos EXACTAMENTE qué órgano falló.
@@ -1890,13 +1939,13 @@ app.get("/", (_req, res) => res.json({
 app.get("/health", async (_req, res) => {
   const checks = {};
   let allOk = true;
- 
+
   // 1. Stores cache
   checks.stores_cache = storesCacheReady
     ? { status: "ok", count: storesCache.size }
     : { status: "warming", count: 0 };
   if (!storesCacheReady) allOk = false;
- 
+
   // 2. Supabase today_mx
   const t0 = Date.now();
   const today = await sbRpc("today_mx", {});
@@ -1904,7 +1953,7 @@ app.get("/health", async (_req, res) => {
     ? { status: "ok", today, latency_ms: Date.now() - t0 }
     : { status: "down" };
   if (!today) allOk = false;
- 
+
   // 3. Supabase wa_broadcast_recipients (verifica RLS bypass)
   const t1 = Date.now();
   const recipients = await sbRpcArray("wa_broadcast_recipients", {});
@@ -1912,7 +1961,7 @@ app.get("/health", async (_req, res) => {
     ? { status: "ok", count: recipients.length, latency_ms: Date.now() - t1 }
     : { status: "down" };
   if (!Array.isArray(recipients)) allOk = false;
- 
+
   // 4. Supabase is_profane (verifica profanity sync)
   const t2 = Date.now();
   const profCheck = await sbRpc("is_profane", { p_input: "chingar" });
@@ -1920,7 +1969,7 @@ app.get("/health", async (_req, res) => {
     ? { status: "ok", latency_ms: Date.now() - t2 }
     : { status: profCheck === null ? "down" : "wrong_result" };
   if (profCheck !== true) allOk = false;
- 
+
   // 5. Edge Function wa-auth (echo ping)
   const t3 = Date.now();
   const efPing = await waAuth("ping", {});
@@ -1934,7 +1983,7 @@ app.get("/health", async (_req, res) => {
         latency_ms: Date.now() - t3 }
     : { status: "down" };
   if (!efPing || ["auth_broken","env_missing","down"].includes(checks.edge_function.status)) allOk = false;
- 
+
   // 6. Airtable Broadcasts table (verifica que el bot puede leer)
   if (AIRTABLE_TOKEN) {
     const t4 = Date.now();
@@ -1952,7 +2001,7 @@ app.get("/health", async (_req, res) => {
   } else {
     checks.airtable = { status: "no_token" };
   }
- 
+
   // 7. Supabase limiter (saturación)
   const limiterUsage = (SB_LIMITER.running / SB_LIMITER.maxConcurrent * 100).toFixed(0);
   const queueUsage = (SB_LIMITER.queue.length / SB_LIMITER.maxQueue * 100).toFixed(0);
@@ -1963,7 +2012,7 @@ app.get("/health", async (_req, res) => {
     running_pct: limiterUsage,
     queue_pct: queueUsage,
   };
- 
+
   // 8. Sessions / userlocks memory
   checks.memory = {
     sesiones: sesiones.size,
@@ -1971,13 +2020,13 @@ app.get("/health", async (_req, res) => {
     dedup: processedMsgs.size,
     rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
   };
- 
+
   // 9. Circuit breaker
   checks.airtable_circuit = atCircuitOpen
     ? { status: "open", since: atCircuitOpenedAt }
     : { status: "closed" };
   if (atCircuitOpen) allOk = false;
- 
+
   res.status(allOk ? 200 : 503).json({
     status: allOk ? "ok" : "degraded",
     version: VERSION,
@@ -1986,11 +2035,11 @@ app.get("/health", async (_req, res) => {
     checks,
   });
 });
- 
+
 app.get("/ready", (_req, res) => {
   res.status(storesCacheReady ? 200 : 503).send(storesCacheReady ? "OK" : "warming up");
 });
- 
+
 // FIX v3.8: /metrics auth opcional
 app.get("/metrics", (req, res) => {
   if (METRICS_SECRET) {
@@ -2016,7 +2065,7 @@ app.get("/metrics", (req, res) => {
     hoy_mx:            hoyMexico(),
   });
 });
- 
+
 // ─── STARTUP ────────────────────────────────────────────────────────────────
 function validarEnvVars() {
   const checks = {
@@ -2046,7 +2095,7 @@ function validarEnvVars() {
   }
   return true;
 }
- 
+
 async function selfCheck() {
   log.info(null, "🔍 Self-check...");
   const checks = { supabase_rpc: false, edge_function: false, airtable: false };
@@ -2069,37 +2118,36 @@ async function selfCheck() {
   if (!Object.values(checks).every(Boolean)) log.warn(null, "⚠️ Sistemas degradados");
   return checks;
 }
- 
+
 const PORT = process.env.PORT || 3000;
- 
+
 async function start() {
   log.info(null, `🚀 Gol v${VERSION} inicializando...`);
   log.info(null, `📡 Supabase: ${SUPABASE_URL}`);
   log.info(null, `🌐 Site: ${SITE_URL}`);
   log.info(null, `🕐 Hoy MX: ${hoyMexico()} | UTC: ${new Date().toISOString()}`);
   log.info(null, `🔧 Flags AT: LOGS=${AT_SYNC_LOGS} FOLIOS=${AT_SYNC_FOLIOS} JUGADORES=${AT_SYNC_JUGADORES} RONDAS=${AT_SYNC_RONDAS} ALERTAS=${AT_SYNC_ALERTAS}`);
- 
+
   validarEnvVars();
   await selfCheck();
   await refreshStoresCache();
   await rescatarBroadcastsHuerfanos();
- 
+
   const server = app.listen(PORT, () => log.info(null, `✅ Listening en puerto ${PORT}`));
   server.on('error', (err) => {
     log.error(null, "Server listen error:", err.message);
     process.exit(1);
   });
- 
+
   setInterval(refreshStoresCache, 60 * 60 * 1000);
   setInterval(procesarBroadcasts, 30 * 1000);
   setInterval(cleanupMaps,        CLEANUP_INTERVAL_MS);
   setInterval(atFlush,            AT_QUEUE_FLUSH_MS);  // FIX v3.8
- 
+
   procesarBroadcasts().catch(() => {});
 }
- 
+
 start().catch(e => {
   log.error(null, "Fatal startup error:", e);
   process.exit(1);
 });
- 
