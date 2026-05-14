@@ -1,6 +1,3 @@
-
-Copy
-
 // ╔══════════════════════════════════════════════════════════════════════════════╗
 // ║  GOL NUTRIZA — BOT v3.8 — PRODUCCIÓN                                         ║
 // ║  Fanáticos del Sabor · Grupo Nutriza · WhatsApp-native                       ║
