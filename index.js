@@ -151,7 +151,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.18";
+const VERSION         = "3.19";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -176,7 +176,25 @@ function isValidSecret(s) {
 }
 
 // ─── AIRTABLE — 9 TABLAS ENGINE V2 ──────────────────────────────────────────
-const AT_BASE = "appDnuaIHpVrXTpz1";
+const AT_BASE = "appDnuaIHpVrXTpz1";  // Engine v2 — datos operacionales
+const AT_BOT_BASE = "apprLebqIDBaogjDJ"; // Bot Control — interfaz de Jonny
+
+// Bot Control field IDs (tabla Usuarios)
+const BC_USUARIOS  = "tblMLwnH97t7WDix7";
+const BC_BROADCASTS = "tbluRhALErgxpB3x9";
+const BCU = {
+  TEL:    "fldnrcKBlRy1DXZGC",
+  FASE:   "fldY8dZQIXu5mupQF",
+  PRIMER: "fldyAx6CjTzYDCm93",
+  ULTIMO: "fldiM65M8hl909yVB",
+  TOTAL:  "fldD47UVZrVeXxnF3",
+};
+const BCB = {
+  MSG:   "fldpZ3lmuKdm0JBJm",
+  EST:   "fldzVQhbvjEThOzO0",
+  ENV:   "fldwtMlLh3XJOmKvc",
+  FALL:  "fldzodKLMsICkQR3m",
+};
 const AT_TABLES = {
   CONFIG:     "tblNZdUxRj9oczXwV",
   TIENDAS:    "tbl2zIMmueuckGR7K",
@@ -811,6 +829,33 @@ function airtableUrl(path, queryParams = {}) {
   const url = new URL(`https://api.airtable.com/v0/${AT_BASE}/${path}`);
   for (const [k, v] of Object.entries(queryParams)) url.searchParams.set(k, v);
   return url.toString();
+}
+
+// Helper para Bot Control (base separada de Engine v2)
+function bcUrl(path, queryParams = {}) {
+  const url = new URL(`https://api.airtable.com/v0/${AT_BOT_BASE}/${path}`);
+  for (const [k, v] of Object.entries(queryParams)) url.searchParams.set(k, v);
+  return url.toString();
+}
+
+// Escribe un usuario en Bot Control (Usuarios table) de forma async/silenciosa
+async function bcSyncUsuario(tel, fase = "activo") {
+  if (!AIRTABLE_TOKEN) return;
+  try {
+    await fetchTimeout(bcUrl(BC_USUARIOS), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ records: [{ fields: {
+        [BCU.TEL]:    `+${tel}`,
+        [BCU.FASE]:   fase,
+        [BCU.PRIMER]: new Date().toISOString(),
+        [BCU.ULTIMO]: new Date().toISOString(),
+        [BCU.TOTAL]:  1,
+      }}]}),
+    }, 8000);
+  } catch(e) {
+    log.warn(null, `bcSyncUsuario fail: ${e.message}`);
+  }
 }
 
 function atEnqueue(tableName, fields) {
@@ -1502,7 +1547,7 @@ async function procesarMensajeCore(tel, texto, trace) {
       pendingFolio: null, intentos: 0,
     });
 
-    // v3.17: sync a Airtable (async, no bloquea respuesta al user)
+    // v3.18: sync a Engine v2 + Bot Control (async, no bloquea)
     const ahora = new Date().toISOString();
     if (AT_SYNC_JUGADORES) atEnqueue("JUGADORES", {
       fldZBWrZplpRablKb: `+${tel}`,
@@ -1531,6 +1576,8 @@ async function procesarMensajeCore(tel, texto, trace) {
       fldh4r8GDV6jr00wp: rondaNum,
       fldDjlIC66SIUbsLZ: "WhatsApp",
     });
+    // Siempre sync a Bot Control (interfaz de Jonny) — independiente de flags
+    bcSyncUsuario(tel, "activo").catch(() => {});
 
     if (!regRes.magic_link) {
       log.warn(trace, `Magic link no generado, fallback URL`);
@@ -1700,57 +1747,81 @@ async function procesarBroadcasts() {
   broadcastRunning = true;
   metrics.broadcast_runs++;
   try {
-    // FIX v3.13: filtro robusto usando FIELD ID en vez de field name.
-    // Si alguien renombra "Estado" en Airtable, el bot sigue funcionando.
-    // Esto requiere que `Estado` sea un singleSelect — usamos su field ID directamente.
-    const url = airtableUrl(AT_TABLES.BROADCASTS, {
-      filterByFormula: `{${FB.EST}}="Listo para enviar"`,
-      returnFieldsByFieldId: "true",
-    });
-    const res = await fetchTimeout(url, { headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}` } });
-    if (!res.ok) {
-      metrics.broadcast_fetch_errors++;
-      log.warn(null, `Airtable Broadcasts fetch failed: ${res.status}`);
-      return;
-    }
-    const data = await res.json().catch(() => ({}));
-    if (!data?.records?.length) return;
+    // Checar AMBAS bases: Engine v2 y Bot Control
+    // Jonny maneja broadcasts desde Bot Control ("🤖 Gol Nutriza — Bot Control")
+    // Engine v2 se mantiene como fallback/legacy
+    const sources = [
+      // [urlBroadcastList, fnMarkEnviando, fnMarkDone]
+      {
+        listUrl: airtableUrl(AT_TABLES.BROADCASTS, {
+          filterByFormula: `{${FB.EST}}="Listo para enviar"`,
+          returnFieldsByFieldId: "true",
+        }),
+        msgField: FB.MSG,
+        markEnviando: (id) => fetchTimeout(airtableUrl(`${AT_TABLES.BROADCASTS}/${id}`), {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ fields: { [FB.EST]: "Enviando" } }),
+        }),
+        markDone: (id, ok, fail) => fetchTimeout(airtableUrl(`${AT_TABLES.BROADCASTS}/${id}`), {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ fields: { [FB.EST]: "Enviado", [FB.ENV]: ok, [FB.FALL]: fail } }),
+        }),
+      },
+      {
+        // Bot Control broadcasts — donde Jonny los gestiona
+        listUrl: bcUrl(BC_BROADCASTS, {
+          filterByFormula: `{${BCB.EST}}="Listo para enviar"`,
+          returnFieldsByFieldId: "true",
+        }),
+        msgField: BCB.MSG,
+        markEnviando: (id) => fetchTimeout(bcUrl(`${BC_BROADCASTS}/${id}`), {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ fields: { [BCB.EST]: "Enviando" } }),
+        }),
+        markDone: (id, ok, fail) => fetchTimeout(bcUrl(`${BC_BROADCASTS}/${id}`), {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ fields: { [BCB.EST]: "Enviado", [BCB.ENV]: ok, [BCB.FALL]: fail } }),
+        }),
+      },
+    ];
 
-    for (const bc of data.records) {
-      const msg = bc.fields[FB.MSG];
-      if (!msg) continue;
-      log.info(null, `📢 Broadcast: "${msg.substring(0, 40)}..."`);
+    for (const src of sources) {
+      try {
+        const res = await fetchTimeout(src.listUrl, { headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}` } });
+        if (!res.ok) { metrics.broadcast_fetch_errors++; continue; }
+        const data = await res.json().catch(() => ({}));
+        if (!data?.records?.length) continue;
 
-      await fetchTimeout(airtableUrl(`${AT_TABLES.BROADCASTS}/${bc.id}`), {
-        method: "PATCH",
-        headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ fields: { [FB.EST]: "Enviando" } }),
-      });
+        for (const bc of data.records) {
+          const msg = bc.fields[src.msgField];
+          if (!msg) continue;
+          log.info(null, `📢 Broadcast: "${msg.substring(0, 40)}..."`);
 
-      // FIX v3.11: usar RPC SECURITY DEFINER en vez de query directa.
-      // Mohamed agregó RLS en profiles que bloquea anon de leer wa_users.
-      // sbGet(profiles?wa_registered=eq.true...) → permission denied desde v3.10.
-      // wa_broadcast_recipients() bypassea RLS y devuelve solo phones (no PII).
-      // Usamos sbRpcArray porque devuelve N filas (TABLE), no single row.
-      const jugadores = await sbRpcArray("wa_broadcast_recipients", {}, null);
-      let ok = 0, fail = 0;
-      if (Array.isArray(jugadores)) {
-        for (const j of jugadores) {
-          if (!j.wa_phone) continue;
-          const sent = await enviar(j.wa_phone, msg, null);
-          if (sent?.messages?.[0]?.id) ok++;
-          else fail++;
+          await src.markEnviando(bc.id);
+
+          const jugadores = await sbRpcArray("wa_broadcast_recipients", {}, null);
+          let ok = 0, fail = 0;
+          if (Array.isArray(jugadores)) {
+            for (const j of jugadores) {
+              if (!j.wa_phone) continue;
+              const sent = await enviar(j.wa_phone, msg, null);
+              if (sent?.messages?.[0]?.id) ok++;
+              else fail++;
+            }
+          }
+          metrics.broadcast_sent += ok;
+          metrics.broadcast_failed += fail;
+
+          await src.markDone(bc.id, ok, fail);
+          log.info(null, `✅ Broadcast: ${ok} ok, ${fail} fallidos`);
         }
+      } catch(e) {
+        log.warn(null, `Broadcast source error: ${e.message}`);
       }
-      metrics.broadcast_sent += ok;
-      metrics.broadcast_failed += fail;
-
-      await fetchTimeout(airtableUrl(`${AT_TABLES.BROADCASTS}/${bc.id}`), {
-        method: "PATCH",
-        headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ fields: { [FB.EST]: "Enviado", [FB.ENV]: ok, [FB.FALL]: fail } }),
-      });
-      log.info(null, `✅ Broadcast: ${ok} ok, ${fail} fallidos`);
     }
   } catch (e) {
     recordError("airtable:broadcast", e);
