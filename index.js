@@ -1,9 +1,21 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRIZA — BOT v3.8 — PRODUCCIÓN                                         ║
+// ║  GOL NUTRIZA — BOT v3.20 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutriza · WhatsApp-native                       ║
 // ║                                                                              ║
-// ║  Auditoría #6: SECURITY HARDENING + Airtable saturation handling             ║
+// ║  v3.20: ESTADO + IP CAPTURE + LEADERBOARD + ANTI-FRAUD ANALYTICS             ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
+//
+// ─── NUEVO EN v3.20 ─────────────────────────────────────────────────────────
+// 1. stores cache incluye `estado` (CDMX, Jalisco, etc) — 30 estados cubiertos
+// 2. getStoreFromFolio retorna {name, brand, estado, sucursal}
+// 3. bcSyncUsuario enriquece Bot Control con: Username, Marca, Tienda,
+//    Código_Tienda, Estado, Tiendas_Visitadas (lista acumulativa)
+// 4. Captura IP del último magic link via RPC get_last_login_ip
+//    y sincroniza a Airtable. Detecta fraude (misma IP, múltiples cuentas).
+// 5. Cron diario 8 PM (hora MX) genera snapshot del Leaderboard:
+//    consulta leaderboard_snapshot RPC, escribe top 1000 a Bot Control.
+//    No carga el sistema en tiempo real.
+//
 //
 // ════════════════════════════ HOLA, FUTURO CLAUDE ════════════════════════════
 // LEE TODO ESTE HEADER. Tomó 6 auditorías reales contra el pipeline llegar aquí.
@@ -182,12 +194,35 @@ const AT_BOT_BASE = "apprLebqIDBaogjDJ"; // Bot Control — interfaz de Jonny
 // Bot Control field IDs (tabla Usuarios)
 const BC_USUARIOS  = "tblMLwnH97t7WDix7";
 const BC_BROADCASTS = "tbluRhALErgxpB3x9";
+const BC_LEADERBOARD = "tblOEJkSlJuQfO5pE";  // v3.20: snapshot diario
 const BCU = {
   TEL:    "fldnrcKBlRy1DXZGC",
   FASE:   "fldY8dZQIXu5mupQF",
   PRIMER: "fldyAx6CjTzYDCm93",
   ULTIMO: "fldiM65M8hl909yVB",
   TOTAL:  "fldD47UVZrVeXxnF3",
+  // v3.20: campos anti-fraude y analytics
+  USERNAME:          "fldJvuy3Sgz84l8rD",
+  MARCA:             "fldAhyZcETRHOFrMv",
+  TIENDA:            "fldXO9M4kju43Evqk",
+  CODIGO_TIENDA:     "fldPt5bdPoHcHYjNj",
+  IP:                "fldKSvazm1ZcAT4hH",
+  SOSPECHOSO:        "fldnmFX6blp2G54ii",
+  ESTADO:            "fldYdof8WBKcYOM0E",
+  TIENDAS_VISITADAS: "fldDDDpIusKN5sP71",
+  PUNTOS_TOTAL:      "fldljAcl0TAXGEmvY",
+};
+const BCL = {  // v3.20: Bot Control Leaderboard
+  SNAPSHOT_ID:       "fldZ7R8QKMGfmQQpg",
+  FECHA:             "fldpCb5kC5iGJ7eEU",
+  POSICION:          "fldHKE5SKEwflp6w0",
+  USERNAME:          "fldZA00CeduzS7M8Z",
+  TELEFONO:          "fldicf03YFtMaygvg",
+  PUNTOS_TOTAL:      "fldF0ubOtf8xkUGx5",
+  MARCA:             "fldSk3esW82MeKbuO",
+  ESTADO:            "fldeuYPjLoO1kHdRV",
+  TIENDAS_VISITADAS: "fldPDsrkadpYMssv5",
+  IP:                "fld6Fys21ENTjzQ8h",
 };
 const BCB = {
   MSG:   "fldpZ3lmuKdm0JBJm",
@@ -618,24 +653,28 @@ async function waAuth(action, params = {}, trace) {
 }
 
 // ─── STORES CACHE (doble buffering) ─────────────────────────────────────────
+// v3.20: incluye estado para analytics geográficas
 async function refreshStoresCache() {
-  const data = await sbGet("stores?is_active=eq.true&select=sucursal,name,brand&limit=2000");
+  const data = await sbGet("stores?is_active=eq.true&select=sucursal,name,brand,estado&limit=2000");
   if (!Array.isArray(data)) {
     log.error(null, "stores cache refresh falló — sigo con anterior");
     return false;
   }
   const fresh = new Map();
-  for (const s of data) fresh.set(s.sucursal, { name: s.name, brand: s.brand });
+  for (const s of data) fresh.set(s.sucursal, { name: s.name, brand: s.brand, estado: s.estado });
   storesCache = fresh;
   storesCacheReady = true;
-  log.info(null, `🏪 Stores cache: ${storesCache.size} tiendas`);
+  log.info(null, `🏪 Stores cache: ${storesCache.size} tiendas (con estado)`);
   return true;
 }
 
 function getStoreFromFolio(folio) {
   if (!storesCacheReady) return null;
   const sucursal = parseInt(folio.substring(2, 7), 10);
-  return storesCache.get(sucursal) || null;
+  const cached = storesCache.get(sucursal);
+  if (!cached) return null;
+  // v3.20: retornar también código_tienda
+  return { name: cached.name, brand: cached.brand, estado: cached.estado, sucursal };
 }
 
 // ─── VALIDADOR FOLIO ────────────────────────────────────────────────────────
@@ -838,23 +877,100 @@ function bcUrl(path, queryParams = {}) {
   return url.toString();
 }
 
-// Escribe un usuario en Bot Control (Usuarios table) de forma async/silenciosa
-async function bcSyncUsuario(tel, fase = "activo") {
+// v3.20: Sync enriquecido con marca, tienda, estado, código_tienda
+// storeInfo = { name, brand, estado, sucursal } de getStoreFromFolio
+// extras = { username, ipUltimo, puntosTotal, tiendasVisitadas, sospechoso }
+async function bcSyncUsuario(tel, fase = "activo", storeInfo = null, extras = {}) {
   if (!AIRTABLE_TOKEN) return;
   try {
+    const fields = {
+      [BCU.TEL]:    `+${tel}`,
+      [BCU.FASE]:   fase,
+      [BCU.ULTIMO]: new Date().toISOString(),
+      [BCU.TOTAL]:  extras.totalMensajes || 1,
+    };
+    // Solo seteamos PRIMER si no existe (es upsert pero el flag es eso)
+    if (extras.primerContacto !== false) {
+      fields[BCU.PRIMER] = new Date().toISOString();
+    }
+    // v3.20: enriquecer con datos de tienda si disponibles
+    if (storeInfo) {
+      fields[BCU.MARCA]         = storeInfo.brand || null;
+      fields[BCU.TIENDA]        = storeInfo.name || null;
+      fields[BCU.CODIGO_TIENDA] = storeInfo.sucursal || null;
+      fields[BCU.ESTADO]        = storeInfo.estado || null;
+    }
+    if (extras.username)          fields[BCU.USERNAME]          = extras.username;
+    if (extras.ipUltimo)          fields[BCU.IP]                = extras.ipUltimo;
+    if (extras.puntosTotal != null) fields[BCU.PUNTOS_TOTAL]    = extras.puntosTotal;
+    if (extras.tiendasVisitadas)  fields[BCU.TIENDAS_VISITADAS] = extras.tiendasVisitadas;
+
     await fetchTimeout(bcUrl(BC_USUARIOS), {
       method: "POST",
       headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ records: [{ fields: {
-        [BCU.TEL]:    `+${tel}`,
-        [BCU.FASE]:   fase,
-        [BCU.PRIMER]: new Date().toISOString(),
-        [BCU.ULTIMO]: new Date().toISOString(),
-        [BCU.TOTAL]:  1,
-      }}]}),
+      body: JSON.stringify({ records: [{ fields }] }),
     }, 8000);
   } catch(e) {
     log.warn(null, `bcSyncUsuario fail: ${e.message}`);
+  }
+}
+
+// v3.20: obtener IP del último login desde Supabase auth logs
+// El IP se captura cuando el usuario hace click en el magic link.
+// La RPC `get_last_login_ip` consulta auth.audit_log_entries.
+async function getUserLastIP(tel) {
+  try {
+    const res = await sbRpc("get_last_login_ip", { p_phone: tel }, null);
+    if (res?.found && res?.ip) return res.ip;
+  } catch (e) {
+    log.warn(null, `getUserLastIP fail: ${e.message}`);
+  }
+  return null;
+}
+
+// v3.20: snapshot diario del leaderboard
+// Se llama vía cron a las 8 PM hora MX
+async function runLeaderboardSnapshot() {
+  if (!AIRTABLE_TOKEN) return;
+  try {
+    const data = await sbRpc("leaderboard_snapshot", { p_limit: 1000 }, null);
+    if (!Array.isArray(data) || data.length === 0) {
+      log.info(null, "Leaderboard snapshot: 0 usuarios, skip");
+      return;
+    }
+    const fecha = new Date().toISOString().substring(0, 10);
+    const records = data.map((row) => ({
+      fields: {
+        [BCL.SNAPSHOT_ID]:       `${fecha}-${String(row.posicion).padStart(4, '0')}`,
+        [BCL.FECHA]:             fecha,
+        [BCL.POSICION]:          row.posicion,
+        [BCL.USERNAME]:          row.username,
+        [BCL.TELEFONO]:          `+${row.wa_phone}`,
+        [BCL.PUNTOS_TOTAL]:      row.puntos_total,
+        [BCL.MARCA]:             row.brand,
+        [BCL.ESTADO]:            row.estado,
+        [BCL.TIENDAS_VISITADAS]: row.tiendas_visitadas,
+      },
+    }));
+    // Batch de 10 (límite Airtable)
+    let success = 0;
+    for (let i = 0; i < records.length; i += 10) {
+      const batch = records.slice(i, i + 10);
+      try {
+        await fetchTimeout(bcUrl(BC_LEADERBOARD), {
+          method: "POST",
+          headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ records: batch }),
+        }, 8000);
+        success += batch.length;
+      } catch (e) {
+        log.warn(null, `Leaderboard batch fail at i=${i}: ${e.message}`);
+      }
+      await new Promise(r => setTimeout(r, 250));  // ~4 req/s seguro
+    }
+    log.info(null, `📊 Leaderboard snapshot: ${success}/${records.length} registros`);
+  } catch (e) {
+    log.error(null, `Leaderboard snapshot ERR: ${e.message}`);
   }
 }
 
@@ -1576,8 +1692,22 @@ async function procesarMensajeCore(tel, texto, trace) {
       fldh4r8GDV6jr00wp: rondaNum,
       fldDjlIC66SIUbsLZ: "WhatsApp",
     });
-    // Siempre sync a Bot Control (interfaz de Jonny) — independiente de flags
-    bcSyncUsuario(tel, "activo").catch(() => {});
+    // v3.20: sync enriquecido con marca/tienda/estado del primer folio + IP
+    // El IP lo capturamos async después de que el user use el magic link
+    const storeInfoFirst = getStoreFromFolio(pendFolio);
+    bcSyncUsuario(tel, "activo", storeInfoFirst, {
+      username: finalUsername,
+      primerContacto: true,
+    }).catch(() => {});
+
+    // Captura IP async (espera 30s a que el user dé click al magic link, luego sync)
+    setTimeout(async () => {
+      const ip = await getUserLastIP(tel);
+      if (ip) {
+        bcSyncUsuario(tel, "activo", null, { ipUltimo: ip, primerContacto: false }).catch(() => {});
+        log.info(trace, `IP capturada para ${tel}: ${ip}`);
+      }
+    }, 30000);
 
     if (!regRes.magic_link) {
       log.warn(trace, `Magic link no generado, fallback URL`);
@@ -2214,6 +2344,23 @@ async function start() {
   setInterval(procesarBroadcasts, 30 * 1000);
   setInterval(cleanupMaps,        CLEANUP_INTERVAL_MS);
   setInterval(atFlush,            AT_QUEUE_FLUSH_MS);  // FIX v3.8
+
+  // v3.20: cron diario para snapshot del Leaderboard a las 8 PM hora MX
+  // Chequea cada 5 minutos. Si la hora MX es 20:00-20:04, ejecuta una vez.
+  // Usa flag en memoria para no duplicar en la misma ventana.
+  let lastSnapshotDate = null;
+  setInterval(() => {
+    const now = new Date();
+    // Convertir a hora MX (CDMX = UTC-6, ajustable; horario verano UTC-5)
+    const mxNow = new Date(now.toLocaleString("en-US", { timeZone: "America/Mexico_City" }));
+    const hh = mxNow.getHours();
+    const today = mxNow.toISOString().substring(0, 10);
+    if (hh === 20 && lastSnapshotDate !== today) {
+      lastSnapshotDate = today;
+      log.info(null, `📊 Triggering daily leaderboard snapshot for ${today}`);
+      runLeaderboardSnapshot().catch(e => log.error(null, "Leaderboard snapshot ERR:", e.message));
+    }
+  }, 5 * 60 * 1000);  // check every 5 min
 
   procesarBroadcasts().catch(() => {});
 }
