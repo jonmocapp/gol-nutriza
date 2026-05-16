@@ -1,21 +1,25 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRIZA — BOT v3.20 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRIZA — BOT v3.22 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutriza · WhatsApp-native                       ║
 // ║                                                                              ║
-// ║  v3.20: ESTADO + IP CAPTURE + LEADERBOARD + ANTI-FRAUD ANALYTICS             ║
+// ║  v3.22: AIRTABLE CONSOLIDADO EN BOT CONTROL                                  ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 //
-// ─── NUEVO EN v3.20 ─────────────────────────────────────────────────────────
-// 1. stores cache incluye `estado` (CDMX, Jalisco, etc) — 30 estados cubiertos
-// 2. getStoreFromFolio retorna {name, brand, estado, sucursal}
-// 3. bcSyncUsuario enriquece Bot Control con: Username, Marca, Tienda,
-//    Código_Tienda, Estado, Tiendas_Visitadas (lista acumulativa)
-// 4. Captura IP del último magic link via RPC get_last_login_ip
-//    y sincroniza a Airtable. Detecta fraude (misma IP, múltiples cuentas).
-// 5. Cron diario 8 PM (hora MX) genera snapshot del Leaderboard:
-//    consulta leaderboard_snapshot RPC, escribe top 1000 a Bot Control.
-//    No carga el sistema en tiempo real.
+// ─── NUEVO EN v3.22 ─────────────────────────────────────────────────────────
+// C2. Consolidación Airtable. Bot ya no escribe a Engine v2 (appDnuaIHpVrXTpz1).
+//     TODO va a Bot Control (apprLebqIDBaogjDJ):
+//       - Usuarios (con Marca, Tienda, Estado, IP, Sospechoso)
+//       - Canjes ⭐ NUEVO — 1 fila por folio canjeado, con todos los detalles
+//       - Broadcasts, Leaderboard, Logs (ya existían)
+//     Engine v2 queda como archivo histórico (no se borra, solo se ignora).
+//     Reduce 50% requests a Airtable, menor riesgo de rate limit.
 //
+// ─── HEREDADO DE v3.21 ──────────────────────────────────────────────────────
+// C1. Profanidad UNIFICADA via Edge Function is_profane RPC.
+// C3. Eliminadas RPCs sin uso. Bot llama validate_and_claim_ticket directo.
+// C4. wa_rondas_hoy se incrementa al COMPLETAR 4 minijuegos (no al canjear).
+// C5. Cron 5 min cleanup_stuck_sessions libera sesiones >15 min.
+// M1-M5. Search_path, RLS optimizado, REVOKE EXECUTE, índices FK.
 //
 // ════════════════════════════ HOLA, FUTURO CLAUDE ════════════════════════════
 // LEE TODO ESTE HEADER. Tomó 6 auditorías reales contra el pipeline llegar aquí.
@@ -163,7 +167,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.19";
+const VERSION         = "3.22";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -195,6 +199,7 @@ const AT_BOT_BASE = "apprLebqIDBaogjDJ"; // Bot Control — interfaz de Jonny
 const BC_USUARIOS  = "tblMLwnH97t7WDix7";
 const BC_BROADCASTS = "tbluRhALErgxpB3x9";
 const BC_LEADERBOARD = "tblOEJkSlJuQfO5pE";  // v3.20: snapshot diario
+const BC_CANJES    = "tbl0YNSJEQPE4jsYO";    // v3.22: cada folio canjeado
 const BCU = {
   TEL:    "fldnrcKBlRy1DXZGC",
   FASE:   "fldY8dZQIXu5mupQF",
@@ -224,11 +229,25 @@ const BCL = {  // v3.20: Bot Control Leaderboard
   TIENDAS_VISITADAS: "fldPDsrkadpYMssv5",
   IP:                "fld6Fys21ENTjzQ8h",
 };
+const BCC = {  // v3.22: Bot Control Canjes
+  FOLIO:         "fldcRMqF5RheA7DwT",
+  TELEFONO:      "fldG6cDw0Z0jFqEAF",
+  USERNAME:      "fld7b477PRrnVUexV",
+  CODIGO_TIENDA: "fldIkORyjNReov5tg",
+  NOMBRE_TIENDA: "fldUyTJdC8kIJhrca",
+  MARCA:         "fldo8cGQgEfSkRbxj",
+  ESTADO:        "fldhwNx2HfjlGUmL3",
+  FECHA_TICKET:  "fldhCIBRPnpdk7n3W",
+  FECHA_CANJE:   "fldonaQWWTT7KPP1A",
+  RONDA:         "fldn1klPSJTcnR5K1",
+  FUENTE:        "fldGc3TnL88uR8Lup",
+  IP:            "fldi0lwzG1w2q4thR",
+};
 const BCB = {
   MSG:   "fldpZ3lmuKdm0JBJm",
   EST:   "fldzVQhbvjEThOzO0",
   ENV:   "fldwtMlLh3XJOmKvc",
-  FALL:  "fldzodKLMsICkQR3m",
+  FALL:  "fldJ9APbcGZSxMPfC",  // v3.22 fix: nuevo field "Fallidos" (antes apuntaba a "Notas" por error)
 };
 const AT_TABLES = {
   CONFIG:     "tblNZdUxRj9oczXwV",
@@ -245,7 +264,7 @@ const FB = { MSG:"fldadSOH0WyWbj622", EST:"fldEBKYSWpfXUseZa", ENV:"fldM0GtUD8Jk
 
 // ─── CONSTANTES ─────────────────────────────────────────────────────────────
 const RONDAS_MAX           = 5;
-const DIAS_VALIDEZ         = 3;
+const DIAS_VALIDEZ         = 2;  // ALINEADO CON SQL: validate_and_claim_ticket usa v_today > v_date + 1 (=2 días: hoy + ayer)
 const SITE_URL             = "https://fanaticosdelsabor.com";
 const IMG_FOLIO            = "https://i.ibb.co/TDP6mnRz/Folio.jpg";
 
@@ -728,58 +747,32 @@ function validarFormatoFolioLocal(texto) {
   return { ok: false, error: "formato" };
 }
 
-// ─── BLOCKLIST ──────────────────────────────────────────────────────────────
-const BLOCKLIST_RAW = [
-  // Profanidad / odio
-  "nazi","nazis","kkk","hitler","jihad","isis","isil","nigger","nigga","faggot","fag",
-  "retard","rape","rapist","fuck","fucking","fucker","fck","shit","shyt","cock","dick",
-  "pussy","cunt","twat","asshole","bitch","whore","slut","porn","porno","anal","cum",
-  "chingar","chingada","chingado","chingas","chingo","chingon","verga","v3rga","vergota",
-  "puta","putas","puto","putos","pendejo","pendeja","pendejos","pinche","pinches",
-  "mamon","mamona","culero","culo","cabron","cabrona","joto","jotos",
-  "maricon","maricones","panocha","pito","desmadre","huevon","guevon","nalgas",
-  "zorra","zorras","mayate","mierda","mierdas","imbecil","idiota","tarado",
-  // FIX v3.8 #2: palabras reservadas (anti-squatting)
-  "admin","administrador","moderador","mod","staff","oficial","official",
-  "gol_oficial","goloficial","goloficiel","fanaticos","fanaticosdelsabor",
-  "nutriza","grupo_nutriza","nutrisa_oficial","cotorrisa","la_cotorrisa",
-  "anthropic","claude","openai","supabase","whatsapp","meta","facebook",
-  "soporte","support","help","ayuda_oficial","root","sudo","null","undefined",
-  "anonymous","anon","sistema","bot","gol_bot",
-];
+// ─── USERNAME VALIDATION (v3.21) ────────────────────────────────────────────
+// C1: La validación de profanidad se hace SOLO en la Edge Function wa-auth,
+// que consulta is_profane() RPC contra la tabla profanity_words (2,191 palabras,
+// single source of truth, también usada por el website). El bot solo valida
+// formato (longitud, caracteres permitidos, patrones).
+//
+// Si el username pasa este filtro pero contiene profanidad, la Edge Function
+// retorna error 'inappropriate_username' y el bot muestra mensaje al usuario.
 
-function normalizarLeet(t) {
-  return t.toLowerCase()
-    .replace(/\$/g,"s").replace(/@/g,"a").replace(/0/g,"o").replace(/1/g,"i")
-    .replace(/3/g,"e").replace(/4/g,"a").replace(/5/g,"s").replace(/7/g,"t")
-    .replace(/8/g,"b").replace(/!/g,"i").replace(/[-_.]/g,"").replace(/\s+/g,"");
-}
-
-const BLOCKLIST_NORM = new Set(BLOCKLIST_RAW.filter(w => w.length >= 4).map(normalizarLeet));
 const SUFIJOS = ["Gol","FC","MX","Pro","Star","26","Goal","Ace","Crack"];
 
 function generarSugerencia(u) {
   const base = (u || "").replace(/[^a-zA-Z0-9]/g, "").substring(0, 8).trim();
-  if (!base) return `GolFan${Math.floor(10 + Math.random() * 90)}`;
+  if (!base) return `FanGol${Math.floor(10 + Math.random() * 90)}`;
   return base.charAt(0).toUpperCase() + base.slice(1).toLowerCase() + SUFIJOS[Math.floor(Math.random()*SUFIJOS.length)];
 }
 
 function validarUsername(u) {
   u = (u || "").trim();
-  if (!u || u.length < 3)  return { valido: false, razon: "Mínimo 3 caracteres.", sugerencia: "GolFan26" };
+  if (!u || u.length < 3)  return { valido: false, razon: "Mínimo 3 caracteres.", sugerencia: "FanGol26" };
   if (u.length > 20)       return { valido: false, razon: "Máximo 20 caracteres.", sugerencia: generarSugerencia(u) };
   if (!/^[a-zA-Z0-9_]+$/.test(u))
     return { valido: false, razon: "Solo letras, números y guion bajo (_). Sin espacios ni acentos.", sugerencia: generarSugerencia(u) };
   if (/^\d+$/.test(u))     return { valido: false, razon: "No puede ser solo números.", sugerencia: generarSugerencia(u) };
   if (/(.)\1{4,}/.test(u)) return { valido: false, razon: "Demasiados caracteres repetidos.", sugerencia: generarSugerencia(u) };
-  const norm = normalizarLeet(u);
-  for (const w of BLOCKLIST_NORM) {
-    if (norm.includes(w) || norm === w) return { valido: false, razon: "Ese nombre no está permitido.", sugerencia: generarSugerencia(u) };
-  }
-  const lower = u.toLowerCase();
-  if (["oxxo","bimbo","pepsi","cocacola","sabritas"].some(m => lower.includes(m)))
-    return { valido: false, razon: "No se permiten nombres de marcas.", sugerencia: generarSugerencia(u) };
-  if (/\d{10}/.test(u)) return { valido: false, razon: "No uses tu teléfono como nombre.", sugerencia: generarSugerencia(u) };
+  if (/\d{10}/.test(u))    return { valido: false, razon: "No uses tu teléfono como nombre.", sugerencia: generarSugerencia(u) };
   return { valido: true };
 }
 
@@ -926,6 +919,39 @@ async function getUserLastIP(tel) {
     log.warn(null, `getUserLastIP fail: ${e.message}`);
   }
   return null;
+}
+
+// v3.22: registrar cada canje en la tabla Canjes de Bot Control
+// Reemplaza la escritura a Engine v2 / FOLIOS table.
+// Async, no bloquea el flujo principal.
+async function bcSyncCanje(folio, tel, username, storeInfo, rondaNum, ip) {
+  if (!AIRTABLE_TOKEN) return;
+  try {
+    const ahora = new Date().toISOString();
+    const fechaTicket = `20${folio.substring(7,9)}-${folio.substring(9,11)}-${folio.substring(11,13)}`;
+    const fields = {
+      [BCC.FOLIO]:         folio,
+      [BCC.TELEFONO]:      `+${tel}`,
+      [BCC.USERNAME]:      username || null,
+      [BCC.CODIGO_TIENDA]: storeInfo?.sucursal || parseInt(folio.substring(2, 7), 10),
+      [BCC.NOMBRE_TIENDA]: storeInfo?.name || null,
+      [BCC.MARCA]:         storeInfo?.brand || null,
+      [BCC.ESTADO]:        storeInfo?.estado || null,
+      [BCC.FECHA_TICKET]:  fechaTicket,
+      [BCC.FECHA_CANJE]:   ahora,
+      [BCC.RONDA]:         rondaNum,
+      [BCC.FUENTE]:        "WhatsApp",
+    };
+    if (ip) fields[BCC.IP] = ip;
+
+    await fetchTimeout(bcUrl(BC_CANJES), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ records: [{ fields }] }),
+    }, 8000);
+  } catch (e) {
+    log.warn(null, `bcSyncCanje fail: ${e.message}`);
+  }
 }
 
 // v3.20: snapshot diario del leaderboard
@@ -1206,6 +1232,8 @@ Ya eres oficialmente *Fanático del Sabor*.
 🎮 *Toca este link para empezar a jugar:*
 ${magicLink}
 
+✅ *Solo da click* — no necesitas contraseña ni llenar nada.
+
 ⚠️ *Importante — solo para TI:*
 🔒 Este link es *único y personal*. Si alguien más lo abre, tu cuenta se compromete.
 ⏱️ Expira en *1 hora*. Si no entras a tiempo, mándame otro folio para generar uno nuevo.
@@ -1219,6 +1247,8 @@ Vas en la *ronda ${rondaNum} de ${RONDAS_MAX}* hoy.
 
 🎮 *Tu link para esta ronda:*
 ${magicLink}
+
+✅ *Solo da click* — no necesitas contraseña.
 
 ⏱️ Úsalo en la próxima *hora*, solo *una vez*, solo *tú*.
 
@@ -1300,6 +1330,16 @@ Cada persona tiene *${RONDAS_MAX} rondas diarias*.
 
 🌅 Se reinician a *medianoche (hora CDMX)*.
 La hora de tu celular no importa — siempre es hora México.`,
+
+      // v3.21 C4: ya tiene una sesión activa sin terminar
+      session_active:
+`Ya tienes un folio listo para jugar 🎮
+
+👉 Entra a *${SITE_URL}* con el link que te mandé y *termina los 4 minijuegos*.
+
+Cuando completes esa ronda, podrás canjear otro folio.
+
+(Si no completas en 15 minutos, el folio se libera automáticamente.)`,
     };
     return msgs[error] || `No pude validar ese folio. ¿Revisas que esté completo y mándamelo de nuevo?`;
   },
@@ -1474,6 +1514,16 @@ async function procesarMensajeCore(tel, texto, trace) {
   if (!s.cargado) {
     const jugador = await cargarSesion(tel, trace);
     if (jugador) {
+      // v3.22 ANTI-FRAUD: si Jonny marcó al user como bloqueado en Supabase
+      // (UPDATE profiles SET wa_bloqueado=true WHERE id=X), bot lo ignora
+      // silenciosamente. No responde. El user piensa que el bot está caído.
+      // Esto previene que el fraudulento sepa que fue detectado y abra otra cuenta.
+      if (jugador.wa_bloqueado === true) {
+        metrics.user_blocked = (metrics.user_blocked || 0) + 1;
+        log.warn(trace, `🚫 Usuario bloqueado, ignorando: ${tel}`);
+        return;
+      }
+
       // ============================================================
       // CLAUDE NOTE — Recuperación post-reinicio del bot (v3.16)
       // ============================================================
@@ -1501,11 +1551,19 @@ async function procesarMensajeCore(tel, texto, trace) {
         rondasHoy:   typeof jugador.wa_rondas_hoy === 'number' ? jugador.wa_rondas_hoy : 0,
         rondasTotal: typeof jugador.wa_rondas_total === 'number' ? jugador.wa_rondas_total : 0,
         fechaReset:  jugador.wa_fecha_reset || null,
+        bloqueado:   jugador.wa_bloqueado === true,
       });
     } else {
       setSesion(tel, { cargado: true, fase: "nuevo" });
     }
     s = getSesion(tel);
+  }
+
+  // Doble check: si la sesión cacheada dice bloqueado (puede pasar si jonny lo bloqueó después del cache)
+  if (s.bloqueado === true) {
+    metrics.user_blocked = (metrics.user_blocked || 0) + 1;
+    log.warn(trace, `🚫 Usuario bloqueado (cache), ignorando: ${tel}`);
+    return;
   }
 
   const username = s.username || null;
@@ -1632,11 +1690,10 @@ async function procesarMensajeCore(tel, texto, trace) {
       return enviar(tel, `Hubo un problema. Mándame tu folio de nuevo 🎫`, trace);
     }
 
-    // CLAUDE NOTE: igual que en flujo de re-claim (v3.16), la SQL function hace
-    // incremento atómico. Pasamos null para que use sus propios COALESCE+1.
-    const claimRes = await sbRpc("wa_claim_ticket", {
-      p_code: pendFolio, p_user_id: newUserId, p_phone: tel,
-      p_rondas_hoy: null, p_rondas_total: null, p_fecha_reset: hoy,
+    // v3.21 C3: usar validate_and_claim_ticket directamente. wa_claim_ticket era wrapper sin propósito.
+    // v3.21 C4: validate_and_claim_ticket ya NO incrementa wa_rondas_hoy (eso pasa cuando completa 4 juegos).
+    const claimRes = await sbRpc("validate_and_claim_ticket", {
+      p_code: pendFolio, p_user_id: newUserId,
     }, trace);
 
     if (!claimRes?.success) {
@@ -1647,54 +1704,40 @@ async function procesarMensajeCore(tel, texto, trace) {
     }
     metrics.claim_ok++;
 
-    // Re-leer profile post-claim para tener los valores reales que DB calculó.
-    // En registro nuevo, debe ser rondasHoy=1, rondasTotal=1 (primer claim del user).
-    let rondaNum = 1;
-    let totalNum = 1;
+    // v3.22 C4 FIX: separar SEMÁNTICAS:
+    //   - completedToday = rondas COMPLETADAS hoy (para session.rondasHoy, M.bienvenidaConocido, etc)
+    //   - rondaNum = la ronda que VA A jugar AHORA (para "Vas en la ronda X de 5")
+    //   - rondaNum = completedToday + 1
+    let completedToday = 0;
+    let totalCompleted = 0;
     const postProfile = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
     if (postProfile?.found) {
-      rondaNum = postProfile.wa_rondas_hoy || 1;
-      totalNum = postProfile.wa_rondas_total || 1;
+      completedToday = (postProfile.wa_fecha_reset === hoy ? postProfile.wa_rondas_hoy : 0) || 0;
+      totalCompleted = postProfile.wa_rondas_total || 0;
     }
+    const rondaNum = completedToday + 1;  // ronda que jugará ahora
+    const totalNum = totalCompleted + 1;
 
     setSesion(tel, {
       fase: "activo", username: finalUsername, userId: newUserId,
-      rondasHoy: rondaNum, rondasTotal: totalNum, fechaReset: hoy,
+      // IMPORTANTE: rondasHoy en session = completadas (NO la que va a jugar)
+      // para que M.bienvenidaConocido muestre correctamente "Hoy llevas X/5 rondas jugadas"
+      rondasHoy: completedToday, rondasTotal: totalCompleted, fechaReset: hoy,
       pendingFolio: null, intentos: 0,
     });
 
-    // v3.18: sync a Engine v2 + Bot Control (async, no bloquea)
+    // v3.22: TODO se va a Bot Control. Engine v2 deprecado.
     const ahora = new Date().toISOString();
-    if (AT_SYNC_JUGADORES) atEnqueue("JUGADORES", {
-      fldZBWrZplpRablKb: `+${tel}`,
-      fldZZQ9SENjSGwRwB: finalUsername,
-      fldjhoXN41tMuSUpl: "activo",
-      fldkPg41ius04MuUK: rondaNum,
-      fldzQHOAWwlkUV6Kt: totalNum,
-      fldaCpQQLMJYgd3Q9: ahora,
-      fldML4hFVSS0XUcXR: ahora,
-      fldDL3hKFCrgBrtVR: hoy,
-      fldKfCxb4kIbIKzkI: pendFolio,
-    });
-    if (AT_SYNC_FOLIOS) atEnqueue("FOLIOS", {
-      fldXTWLuxNEfW662q: pendFolio,
-      fldyy9XLB7wckFpTa: `+${tel}`,
-      fldxjgMJgBVF9DuSZ: pendFolio.substring(2, 7),
-      fld83GKJK72uE2tkN: `20${pendFolio.substring(7,9)}-${pendFolio.substring(9,11)}-${pendFolio.substring(11,13)}`,
-      fldgHP2kgPDxpprN2: ahora,
-      fldzOPkSCihsFeE2k: true,
-      fld36uU97d5j5zMYv: 1,
-    });
-    if (AT_SYNC_RONDAS) atEnqueue("RONDAS", {
-      fld2buT3RXP1vexTW: `+${tel}`,
-      fldRYI7XShhvhsJHg: pendFolio,
-      fldTAnP4CpDhq34Mq: ahora,
-      fldh4r8GDV6jr00wp: rondaNum,
-      fldDjlIC66SIUbsLZ: "WhatsApp",
-    });
-    // v3.20: sync enriquecido con marca/tienda/estado del primer folio + IP
-    // El IP lo capturamos async después de que el user use el magic link
+    // v3.20: sync enriquecido con marca/tienda/estado del primer folio
     const storeInfoFirst = getStoreFromFolio(pendFolio);
+
+    // v3.22: registrar canje en tabla Canjes (Bot Control)
+    // rondaNum es post-claim, pero como C4 cambió la lógica, en realidad
+    // representa "intento de canje" más que "ronda completada".
+    // Mostramos rondaNum=postProfile.wa_rondas_hoy+1 para que sea legible
+    // (qué ronda VA a contar cuando complete los 4 juegos).
+    bcSyncCanje(pendFolio, tel, finalUsername, storeInfoFirst, rondaNum, null).catch(() => {});
+
     bcSyncUsuario(tel, "activo", storeInfoFirst, {
       username: finalUsername,
       primerContacto: true,
@@ -1776,24 +1819,20 @@ async function procesarMensajeCore(tel, texto, trace) {
       if (rondasHoy >= RONDAS_MAX) return enviar(tel, M.maxRondas(username), trace);
 
       // ============================================================
-      // CLAUDE NOTE — Atomic counter handling (v3.16)
       // ============================================================
-      // validate_and_claim_ticket incrementa atómicamente wa_rondas_hoy/total
-      // dentro de la transacción. wa_claim_ticket es solo un wrapper.
-      //
-      // Antes el bot pasaba sus propios rondaNum/newTotal calculados desde cache,
-      // que SOBREESCRIBÍAN el incremento atómico. Si web canjeaba al mismo tiempo,
-      // se perdía conteo silenciosamente.
-      //
-      // SOLUCIÓN (v3.16): después del claim, re-leemos profile para tener
-      // los valores REALES que la DB calculó atómicamente. Eso es nuestra fuente
-      // de verdad para mostrar al user.
+      // CLAUDE NOTE — Atomic counter handling (v3.21)
       // ============================================================
-      const claimRes = await sbRpc("wa_claim_ticket", {
-        p_code: folio, p_user_id: userId, p_phone: tel,
-        // Los params se mantienen por compatibilidad pero la función SQL
-        // ya no los usa (v3.16 migración wa_claim_ticket_atomic_counter).
-        p_rondas_hoy: null, p_rondas_total: null, p_fecha_reset: hoy,
+      // v3.21 C4: validate_and_claim_ticket YA NO incrementa wa_rondas_hoy
+      // al canjear. Solo setea current_ticket_code. El incremento ocurre
+      // cuando submit_game_score detecta 4 minijuegos completados.
+      //
+      // El bot post-claim NO debería mostrar "ronda X/5" todavía, porque
+      // el user aún no ha jugado. Mostramos "ya tienes folio activo, ve a jugar".
+      //
+      // C3: wa_claim_ticket era wrapper sin propósito, eliminado.
+      // ============================================================
+      const claimRes = await sbRpc("validate_and_claim_ticket", {
+        p_code: folio, p_user_id: userId,
       }, trace);
 
       if (!claimRes?.success) {
@@ -1802,44 +1841,30 @@ async function procesarMensajeCore(tel, texto, trace) {
       }
       metrics.claim_ok++;
 
-      // Re-leer profile FRESH para tener los contadores REALES post-claim.
-      // Esto es importante porque DB hizo el incremento atómico, no nosotros.
-      let postClaimRondasHoy = rondasHoy + 1;  // fallback si el re-read falla
-      let postClaimRondasTotal = localRondasTotal + 1;
+      // v3.22 C4: separar SEMÁNTICAS:
+      //   - completedToday = rondas completadas hoy (para session)
+      //   - rondaParaMostrar = la ronda que va a jugar ahora (para mensaje)
+      let completedToday = rondasHoy;
+      let totalCompleted = localRondasTotal;
       const postProfile = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
       if (postProfile?.found) {
-        postClaimRondasHoy = postProfile.wa_fecha_reset === hoy
-          ? (postProfile.wa_rondas_hoy || postClaimRondasHoy)
-          : 1;
-        postClaimRondasTotal = postProfile.wa_rondas_total || postClaimRondasTotal;
+        completedToday = (postProfile.wa_fecha_reset === hoy ? postProfile.wa_rondas_hoy : 0) || 0;
+        totalCompleted = postProfile.wa_rondas_total || 0;
       }
-      setSesion(tel, { rondasHoy: postClaimRondasHoy, rondasTotal: postClaimRondasTotal, intentos: 0 });
+      const rondaParaMostrar = completedToday + 1;
+      // session.rondasHoy = completadas (consistente con M.bienvenidaConocido)
+      setSesion(tel, { rondasHoy: completedToday, rondasTotal: totalCompleted, intentos: 0 });
 
-      // v3.17: sync a Airtable (async, no bloquea respuesta al user)
-      const ahoraStr = new Date().toISOString();
-      if (AT_SYNC_FOLIOS) atEnqueue("FOLIOS", {
-        fldXTWLuxNEfW662q: folio,
-        fldyy9XLB7wckFpTa: `+${tel}`,
-        fldxjgMJgBVF9DuSZ: folio.substring(2, 7),
-        fld83GKJK72uE2tkN: `20${folio.substring(7,9)}-${folio.substring(9,11)}-${folio.substring(11,13)}`,
-        fldgHP2kgPDxpprN2: ahoraStr,
-        fldzOPkSCihsFeE2k: true,
-        fld36uU97d5j5zMYv: postClaimRondasHoy,
-      });
-      if (AT_SYNC_RONDAS) atEnqueue("RONDAS", {
-        fld2buT3RXP1vexTW: `+${tel}`,
-        fldRYI7XShhvhsJHg: folio,
-        fldTAnP4CpDhq34Mq: ahoraStr,
-        fldh4r8GDV6jr00wp: postClaimRondasHoy,
-        fldDjlIC66SIUbsLZ: "WhatsApp",
-      });
+      // v3.22: sync canje a Bot Control (Engine v2 deprecated)
+      const storeInfoReclaim = getStoreFromFolio(folio);
+      bcSyncCanje(folio, tel, username, storeInfoReclaim, rondaParaMostrar, null).catch(() => {});
 
       const linkRes = await waAuth("get_link", { phone: tel }, trace);
       if (!linkRes?.magic_link) {
-        return enviar(tel, `✅ ¡Folio registrado, *${username}*!\nVe a *${SITE_URL}* para jugar.\nRonda *${postClaimRondasHoy}* de *${RONDAS_MAX}* hoy.`, trace);
+        return enviar(tel, `✅ ¡Folio registrado, *${username}*!\nVe a *${SITE_URL}* para jugar.\nRonda *${rondaParaMostrar}* de *${RONDAS_MAX}* hoy.`, trace);
       }
       log.info(trace, `Magic link generado: ${maskLink(linkRes.magic_link)}`);
-      return enviar(tel, M.folioAdicional(username, postClaimRondasHoy, linkRes.magic_link), trace);
+      return enviar(tel, M.folioAdicional(username, rondaParaMostrar, linkRes.magic_link), trace);
     }
 
     const storeInfo = getStoreFromFolio(folio);
@@ -2344,6 +2369,19 @@ async function start() {
   setInterval(procesarBroadcasts, 30 * 1000);
   setInterval(cleanupMaps,        CLEANUP_INTERVAL_MS);
   setInterval(atFlush,            AT_QUEUE_FLUSH_MS);  // FIX v3.8
+
+  // v3.21 C5: cron cleanup sesiones atoradas cada 5 min
+  // Libera sesiones >15 min sin completar: borra redemption + libera current_ticket_code
+  setInterval(async () => {
+    try {
+      const res = await sbRpc("cleanup_stuck_sessions", { p_timeout_minutes: 15 }, null);
+      if (res?.released > 0) {
+        log.info(null, `🧹 Cleanup liberó ${res.released} sesiones atoradas`);
+      }
+    } catch (e) {
+      log.warn(null, `cleanup_stuck_sessions err: ${e.message}`);
+    }
+  }, 5 * 60 * 1000);
 
   // v3.20: cron diario para snapshot del Leaderboard a las 8 PM hora MX
   // Chequea cada 5 minutos. Si la hora MX es 20:00-20:04, ejecuta una vez.
