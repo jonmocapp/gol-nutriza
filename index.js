@@ -1,176 +1,60 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRIZA — BOT v3.23 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRIZA — BOT v3.25 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutriza · WhatsApp-native                       ║
 // ║                                                                              ║
-// ║  v3.23: BACKEND FIXES + cleanup wrapper                                      ║
+// ║  v3.25: UX rewrite completo + endpoints admin para Airtable                  ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 //
-// ─── NUEVO EN v3.23 (deployment 16 may 2026) ────────────────────────────────
-// FIX CRÍTICO #1: preview_ticket(text) restaurado en Supabase (había sido
-//   dropeado por migración cleanup_phase1). Sin esto, el bot fallaba en cada
-//   folio con "saturado".
-// FIX CRÍTICO #2: 11 RPCs ahora con GRANT EXECUTE a anon. El bot usa
-//   SUPABASE_ANON_KEY → cualquier call → 401 → "saturado". Resuelto.
-// FIX CRÍTICO #3: Cambio cleanup_stuck_sessions → bot_cleanup_sessions
-//   (wrapper anon-safe que internamente llama cleanup_stuck_sessions con
-//   service_role implícito). Elimina el 401 cada 5 min en logs.
-// MEJORA #1: get_wa_profile ahora retorna wa_puntos_total, wa_best_session_score,
-//   engagement_tier. Bot puede ignorarlos por ahora (backward compatible).
-// MEJORA #2: wa_broadcast_recipients excluye engagement_tier='ARCHIVADO'.
-//   No gasta mensajes en cuentas muertas (>30 días sin actividad).
-// MEJORA #3: CHECK constraint en wa_phase (defensa en profundidad).
-// MEJORA #4: bot_diagnostics() nueva — `SELECT bot_diagnostics();` retorna
-//   todo el estado del sistema en un JSON. Util para debug rápido.
+// ─── NUEVO EN v3.25 (17 may 2026) ───────────────────────────────────────────
+// UX REWRITE: cada mensaje rediseñado con personalidad mexicana, ejemplos
+//   concretos, footers de discoverability, y micro-celebraciones. 22 mensajes
+//   refinados. Footer rotativo invita a descubrir comandos (PREMIOS, PUNTOS,
+//   AYUDA, FOLIO, SOPORTE).
+// COMANDO SOPORTE: escape hatch humano. User escribe SOPORTE → bot pide
+//   contexto → registra en Airtable Soporte → Jonny responde desde admin.
+// PUNTAJE ACUMULADO: rondaCompletada ahora muestra puntos totales además
+//   del puntaje de la ronda actual. Sense of progression.
+// DETECCIÓN DE RE-ENGAGEMENT: si user no juega 3+ días, mensaje especial.
+// ENDPOINTS ADMIN para Airtable:
+//   POST /send-direct  → Jonny manda mensaje custom a un usuario
+//   POST /admin-broadcast-trigger → fuerza procesamiento de cola broadcasts
+//   GET  /admin-health-summary → datos compactos para dashboard de Jonny
+//
+// ─── HEREDADO DE v3.24 ──────────────────────────────────────────────────────
+// FIX #1: session_active → regenera y reenvía magic link
+// FIX #2: endpoint POST /game-complete cierra el loop WhatsApp ↔ Web
+// FIX #3: copy "rondas completadas" (no "jugadas")
+//
+// ─── HEREDADO DE v3.23 ──────────────────────────────────────────────────────
+// preview_ticket restaurado, 11 RPCs con GRANT a anon,
+// bot_cleanup_sessions wrapper, get_wa_profile mejorado,
+// wa_broadcast_recipients filtra ARCHIVADO, CHECK constraint wa_phase
 //
 // ─── HEREDADO DE v3.22 ──────────────────────────────────────────────────────
-// C2. Consolidación Airtable. Bot ya no escribe a Engine v2 (appDnuaIHpVrXTpz1).
-//     TODO va a Bot Control (apprLebqIDBaogjDJ):
-//       - Usuarios (con Marca, Tienda, Estado, IP, Sospechoso)
-//       - Canjes ⭐ NUEVO — 1 fila por folio canjeado, con todos los detalles
-//       - Broadcasts, Leaderboard, Logs (ya existían)
-//     Engine v2 queda como archivo histórico (no se borra, solo se ignora).
-//     Reduce 50% requests a Airtable, menor riesgo de rate limit.
+// Consolidación a Bot Control (apprLebqIDBaogjDJ). Engine v2 deprecado.
 //
 // ─── HEREDADO DE v3.21 ──────────────────────────────────────────────────────
-// C1. Profanidad UNIFICADA via Edge Function is_profane RPC.
-// C3. Eliminadas RPCs sin uso. Bot llama validate_and_claim_ticket directo.
-// C4. wa_rondas_hoy se incrementa al COMPLETAR 4 minijuegos (no al canjear).
-// C5. Cron 5 min cleanup_stuck_sessions libera sesiones >15 min.
-// M1-M5. Search_path, RLS optimizado, REVOKE EXECUTE, índices FK.
+// Profanidad unificada via is_profane RPC.
+// wa_rondas_hoy se incrementa al COMPLETAR 4 minijuegos (no al canjear).
 //
-// ════════════════════════════ HOLA, FUTURO CLAUDE ════════════════════════════
-// LEE TODO ESTE HEADER. Tomó 6 auditorías reales contra el pipeline llegar aquí.
-//
-// ─── NUEVO EN v3.8: SECURITY + ANTI-SATURATION ──────────────────────────────
-//
-// 🔐 SECURITY HARDENING
-//
-//   1. HMAC-SHA256 validation del webhook de Meta (X-Hub-Signature-256)
-//      - Anti-spoofing: ataques con webhooks falsos son rechazados con 401
-//      - Activado si META_APP_SECRET está seteado en env
-//      - SIN seteo: log loud warning pero acepta (para no romper si no lo seteas)
-//
-//   2. /metrics protegido con header secret (METRICS_SECRET env, opcional)
-//      - Sin secret seteado: /metrics es público (como antes)
-//      - Con secret: solo `Authorization: Bearer <secret>` puede leer
-//
-//   3. IP-based rate limit en /webhook (anti-DDoS)
-//      - Max 100 requests/min por IP. Sobre eso: 429.
-//      - El IP real de Meta varía, así que rangos están whitelisted automáticamente
-//        (los que coinciden con prefijos conocidos de Meta).
-//
-//   4. WhatsApp magic link NO se loguea completo (solo prefijo)
-//      - Si Railway logs se filtran, el atacante no tiene el link entero
-//
-// 🌊 AIRTABLE SATURATION HANDLING
-//
-//   PROBLEMA: si millones de usuarios mandan mensajes simultáneo y los stubs
-//   de Airtable están activados, el bot intentaría hacer cientos de writes/seg
-//   a Airtable cuando el rate limit es 5 req/s por base. Airtable rechazaría
-//   y los writes se perderían.
-//
-//   SOLUCIÓN — Queue + Batched Flush + Circuit Breaker:
-//
-//   - Cada "evento" para Airtable se mete en una QUEUE local en memoria.
-//   - Cada 5 segundos, un FLUSHER toma hasta 10 eventos por tabla y los manda
-//     a Airtable en 1 request (Airtable acepta batches de 10 records).
-//   - Si Airtable falla 3 veces seguidas, CIRCUIT BREAKER se abre por 60s.
-//     Durante ese tiempo, eventos se siguen encolando pero no se mandan.
-//   - Si la queue crece >5000 eventos, DROP POLICY: se descartan los más viejos.
-//   - Métricas exponen: queue_size, queue_dropped, flush_success, flush_fail.
-//
-//   ACTUALMENTE TODO ESTO ESTÁ DORMIDO. Los stubs no se activan a menos que
-//   pongas los feature flags AT_SYNC_LOGS=true etc.
-//
-//   Cuando los actives, NO necesitas tocar el bot — el queue se llena
-//   automáticamente y el flusher empieza a vaciarlo.
-//
-// ─── TU ROL EN ESTE PROYECTO ─────────────────────────────────────────────────
-// Eres el coordinador entre Jonny (Meta/Railway/GitHub), Mohamed (Supabase),
-// el bot (este archivo), el website, Meta WhatsApp, y Airtable.
-//
-// ─── ENV VARS NUEVAS EN v3.8 (todas opcionales) ──────────────────────────────
-//   META_APP_SECRET    → Meta Business → App Dashboard → Settings → Basic → App Secret
-//                        Cuando lo agregues, /webhook valida HMAC. Hasta entonces,
-//                        log warning pero acepta (compatible con v3.7).
-//   METRICS_SECRET     → Secret tipo password para acceder a /metrics.
-//                        Sin esto: /metrics es público. Con esto: bearer auth.
-//
-// ─── ENV VARS REQUERIDAS (igual que v3.7) ────────────────────────────────────
+// ─── ENV VARS REQUERIDAS ────────────────────────────────────────────────────
 //   WHATSAPP_TOKEN, PHONE_NUMBER_ID, AIRTABLE_TOKEN,
 //   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_BOT_SECRET
 //
-// ─── PIPELINE END-TO-END ─────────────────────────────────────────────────────
-// 1. Usuario escanea QR ticket → WhatsApp con "JUGAR"
-// 2. Meta hace webhook a Railway POST /webhook
-// 3. Bot: IP rate limit → HMAC validation → JSON parse
-// 4. Bot: dedup msg.id + per-user lock + inbound rate-limit per user
-// 5. Bot: get_wa_profile RPC (cacheado por sesión)
-// 6. Si nuevo: pide folio. Si existing y rondasHoy<5: pide nuevo folio.
-// 7. Usuario manda 21 dígitos → preview_ticket RPC
-// 8. Si OK + nuevo: pide username
-// 9. Usuario manda nombre → Edge Function wa-auth register (con bot_secret)
-// 10. Edge Function crea user + UPDATE profiles + genera magic link
-// 11. Bot: wa_claim_ticket RPC (atomic)
-// 12. Bot: outbound throttle (500ms entre msgs al mismo user)
-// 13. Bot manda magic link
-// 14. Usuario toca link → /hub autenticado
-//
-// ─── LIMITES QUE NO PODEMOS ARREGLAR ─────────────────────────────────────────
-//   1. WhatsApp 24h window — necesita templates de Meta
-//   2. Supabase magic link TTL 1h default — Mohamed puede subir a 24h
-//   3. Airtable rate limit 5 req/s — usamos queue + batching para mitigar
-//   4. RLS Supabase: el bot usa anon, escrituras críticas vía RPCs SECURITY DEFINER
-//
-// ─── PENDIENTES DE MOHAMED ──────────────────────────────────────────────────
-// A. Supabase Secrets:
-//      WA_BOT_SECRET  = (mismo que SUPABASE_BOT_SECRET en Railway)
-//      SITE_URL       = https://fanaticosdelsabor.com
-// B. Supabase Auth → Redirect URLs:
-//      https://fanaticosdelsabor.com/hub
-//      https://fanaticosdelsabor.com/**
-// C. GameHubPage.tsx: useEffect que setea ticketCode desde profile
-//
-// ─── PRE-LANZAMIENTO: CALIBRACIÓN BASELINES ──────────────────────────────────
-// Set vía MCP o SQL Editor (anon ya NO puede llamarla — fix de seguridad v3.8):
-//   SELECT set_store_baselines('[{"sucursal":13224,"baseline":491817},...]'::jsonb);
-//   SELECT baseline_coverage();
-//
-// ─── ZONAS HORARIAS DE MÉXICO ────────────────────────────────────────────────
-// 5 zonas: Mexico_City (mayoría), Cancun, Hermosillo, Mazatlan, Tijuana
-// Bot usa today_mx() = America/Mexico_City. Ventana validez 2 días absorbe la
-// mayoría de discrepancias. Tijuana puede tener edge cases.
-//
-// ─── ESCALA A 1M USUARIOS ────────────────────────────────────────────────────
-// Estado actual: single Railway replica, memoria capped, throttles in/out.
-// Cuello: Supabase free tier 60 req/s. Para >100 req/s, upgrade Pro.
-// Multi-replica: mover sesiones, locks, dedup, queue Airtable a Redis.
-//
-// ─── OBSERVABILIDAD ──────────────────────────────────────────────────────────
-//   GET /         → status básico (sin auth)
-//   GET /health   → 200/503 con Supabase ping (sin auth)
-//   GET /ready    → cache loaded check (sin auth)
-//   GET /metrics  → 40+ counters (opcional auth via METRICS_SECRET)
-//
-// ─── HISTORIAL ───────────────────────────────────────────────────────────────
-//   v3.8: HMAC validation, /metrics auth, IP rate limit, Airtable queue+batcher
-//         (dormido), magic link partial logging
-//   v3.7: doble buffer cache, LRU dedup, broadcast anti-overlap, throttle in/out
-//   v3.6: per-store baseline, observabilidad detallada, multi-tz
-//   v3.5: timezone México fix, webhook batching, magic link expiry
-//   v3.4: stuck recovery, EF v4, preview con user_id
+// ─── ENV VARS OPCIONALES ────────────────────────────────────────────────────
+//   META_APP_SECRET    → HMAC validation de webhooks
+//   METRICS_SECRET     → bearer auth en /metrics
+//   AT_SYNC_LOGS, AT_SYNC_FOLIOS, AT_SYNC_JUGADORES, AT_SYNC_RONDAS,
+//   AT_SYNC_ALERTAS    → activar stubs Airtable (default: off)
 // ════════════════════════════════════════════════════════════════════════════
 
 const express = require("express");
-const crypto = require("crypto");
-const app = express();
+const crypto  = require("crypto");
+const app     = express();
 
-// FIX v3.7: limit 1mb
-// FIX v3.8: capturar raw body para HMAC validation
 app.use(express.json({
   limit: '1mb',
   verify: (req, res, buf) => {
-    // Necesitamos el raw body para calcular HMAC sobre el payload EXACTO
     req.rawBody = buf.toString('utf8');
   }
 }));
@@ -184,7 +68,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.23";
+const VERSION         = "3.25";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -193,11 +77,9 @@ const SUPABASE_URL    = (process.env.SUPABASE_URL || "https://selxawolsjukpvzisi
 const SUPABASE_ANON   = process.env.SUPABASE_ANON_KEY;
 const BOT_SECRET      = process.env.SUPABASE_BOT_SECRET;
 
-// FIX v3.8: nuevas env opcionales
-const META_APP_SECRET = process.env.META_APP_SECRET;   // si está, valida HMAC
-const METRICS_SECRET  = process.env.METRICS_SECRET;    // si está, /metrics requiere bearer
+const META_APP_SECRET = process.env.META_APP_SECRET;
+const METRICS_SECRET  = process.env.METRICS_SECRET;
 
-// Feature flags Airtable (todos OFF por default)
 const AT_SYNC_LOGS      = process.env.AT_SYNC_LOGS      === 'true';
 const AT_SYNC_FOLIOS    = process.env.AT_SYNC_FOLIOS    === 'true';
 const AT_SYNC_JUGADORES = process.env.AT_SYNC_JUGADORES === 'true';
@@ -208,22 +90,25 @@ function isValidSecret(s) {
   return typeof s === 'string' && s.length >= 16 && s !== 'undefined' && s !== 'null';
 }
 
-// ─── AIRTABLE — 9 TABLAS ENGINE V2 ──────────────────────────────────────────
-const AT_BASE = "appDnuaIHpVrXTpz1";  // Engine v2 — datos operacionales
-const AT_BOT_BASE = "apprLebqIDBaogjDJ"; // Bot Control — interfaz de Jonny
+// ─── AIRTABLE — Engine v2 + Bot Control ─────────────────────────────────────
+const AT_BASE     = "appDnuaIHpVrXTpz1";
+const AT_BOT_BASE = "apprLebqIDBaogjDJ";
 
-// Bot Control field IDs (tabla Usuarios)
-const BC_USUARIOS  = "tblMLwnH97t7WDix7";
-const BC_BROADCASTS = "tbluRhALErgxpB3x9";
-const BC_LEADERBOARD = "tblOEJkSlJuQfO5pE";  // v3.20: snapshot diario
-const BC_CANJES    = "tbl0YNSJEQPE4jsYO";    // v3.22: cada folio canjeado
+const BC_USUARIOS    = "tblMLwnH97t7WDix7";
+const BC_BROADCASTS  = "tbluRhALErgxpB3x9";
+const BC_LEADERBOARD = "tblOEJkSlJuQfO5pE";
+const BC_CANJES      = "tbl0YNSJEQPE4jsYO";
+// v3.25: NUEVA tabla Soporte — Jonny debe crearla en Airtable con estos field IDs
+// (o ajustarlos aquí si Airtable asigna otros). Si la tabla NO existe, el bot
+// silenciosamente no hace sync de soporte pero el flujo funciona igual.
+const BC_SOPORTE     = process.env.BC_SOPORTE_TABLE_ID || ""; // setear cuando Jonny cree la tabla
+
 const BCU = {
-  TEL:    "fldnrcKBlRy1DXZGC",
-  FASE:   "fldY8dZQIXu5mupQF",
-  PRIMER: "fldyAx6CjTzYDCm93",
-  ULTIMO: "fldiM65M8hl909yVB",
-  TOTAL:  "fldD47UVZrVeXxnF3",
-  // v3.20: campos anti-fraude y analytics
+  TEL:               "fldnrcKBlRy1DXZGC",
+  FASE:              "fldY8dZQIXu5mupQF",
+  PRIMER:            "fldyAx6CjTzYDCm93",
+  ULTIMO:            "fldiM65M8hl909yVB",
+  TOTAL:             "fldD47UVZrVeXxnF3",
   USERNAME:          "fldJvuy3Sgz84l8rD",
   MARCA:             "fldAhyZcETRHOFrMv",
   TIENDA:            "fldXO9M4kju43Evqk",
@@ -234,7 +119,7 @@ const BCU = {
   TIENDAS_VISITADAS: "fldDDDpIusKN5sP71",
   PUNTOS_TOTAL:      "fldljAcl0TAXGEmvY",
 };
-const BCL = {  // v3.20: Bot Control Leaderboard
+const BCL = {
   SNAPSHOT_ID:       "fldZ7R8QKMGfmQQpg",
   FECHA:             "fldpCb5kC5iGJ7eEU",
   POSICION:          "fldHKE5SKEwflp6w0",
@@ -246,7 +131,7 @@ const BCL = {  // v3.20: Bot Control Leaderboard
   TIENDAS_VISITADAS: "fldPDsrkadpYMssv5",
   IP:                "fld6Fys21ENTjzQ8h",
 };
-const BCC = {  // v3.22: Bot Control Canjes
+const BCC = {
   FOLIO:         "fldcRMqF5RheA7DwT",
   TELEFONO:      "fldG6cDw0Z0jFqEAF",
   USERNAME:      "fld7b477PRrnVUexV",
@@ -261,11 +146,22 @@ const BCC = {  // v3.22: Bot Control Canjes
   IP:            "fldi0lwzG1w2q4thR",
 };
 const BCB = {
-  MSG:   "fldpZ3lmuKdm0JBJm",
-  EST:   "fldzVQhbvjEThOzO0",
-  ENV:   "fldwtMlLh3XJOmKvc",
-  FALL:  "fldJ9APbcGZSxMPfC",  // v3.22 fix: nuevo field "Fallidos" (antes apuntaba a "Notas" por error)
+  MSG:  "fldpZ3lmuKdm0JBJm",
+  EST:  "fldzVQhbvjEThOzO0",
+  ENV:  "fldwtMlLh3XJOmKvc",
+  FALL: "fldJ9APbcGZSxMPfC",
 };
+// v3.25: Field IDs para Soporte. Si Jonny no los conoce aún, el bot usa
+// nombres legibles (field names) como fallback — Airtable acepta ambos.
+const BCS = {
+  TELEFONO:     process.env.BCS_TELEFONO_FIELD     || "Teléfono",
+  USERNAME:     process.env.BCS_USERNAME_FIELD     || "Username",
+  MENSAJE:      process.env.BCS_MENSAJE_FIELD      || "Mensaje original",
+  CATEGORIA:    process.env.BCS_CATEGORIA_FIELD    || "Categoría",
+  ESTADO:       process.env.BCS_ESTADO_FIELD       || "Estado",
+  FECHA_CREADO: process.env.BCS_FECHA_FIELD        || "Fecha creado",
+};
+
 const AT_TABLES = {
   CONFIG:     "tblNZdUxRj9oczXwV",
   TIENDAS:    "tbl2zIMmueuckGR7K",
@@ -281,46 +177,48 @@ const FB = { MSG:"fldadSOH0WyWbj622", EST:"fldEBKYSWpfXUseZa", ENV:"fldM0GtUD8Jk
 
 // ─── CONSTANTES ─────────────────────────────────────────────────────────────
 const RONDAS_MAX           = 5;
-const DIAS_VALIDEZ         = 2;  // ALINEADO CON SQL: validate_and_claim_ticket usa v_today > v_date + 1 (=2 días: hoy + ayer)
+const DIAS_VALIDEZ         = 2;
 const SITE_URL             = "https://fanaticosdelsabor.com";
 const IMG_FOLIO            = "https://i.ibb.co/TDP6mnRz/Folio.jpg";
+const CAMPAIGN_END_DATE    = "9 julio";  // v3.25: visible en varios mensajes
+const DIAS_RE_ENGAGEMENT   = 3;          // v3.25: días sin jugar → mensaje especial
 
-const FETCH_TIMEOUT_MS      = 8000;
-const EDGE_FUNC_TIMEOUT_MS  = 12000;
+const FETCH_TIMEOUT_MS     = 8000;
+const EDGE_FUNC_TIMEOUT_MS = 12000;
 
-const SESSION_TTL_MS        = 24 * 60 * 60 * 1000;
-const DEDUP_TTL_MS          =  5 * 60 * 1000;
-const DEDUP_MAX_ENTRIES     = 50_000;
-const USERLOCK_MAX_AGE_MS   = 60 * 1000;
-const CLEANUP_INTERVAL_MS   = 10 * 60 * 1000;
+const SESSION_TTL_MS       = 24 * 60 * 60 * 1000;
+const DEDUP_TTL_MS         =  5 * 60 * 1000;
+const DEDUP_MAX_ENTRIES    = 50_000;
+const USERLOCK_MAX_AGE_MS  = 60 * 1000;
+const CLEANUP_INTERVAL_MS  = 10 * 60 * 1000;
 
-const OUTBOUND_THROTTLE_MS  = 500;
-const INBOUND_MAX_PER_MIN   = 15;
+const OUTBOUND_THROTTLE_MS = 500;
+const INBOUND_MAX_PER_MIN  = 15;
 
-// FIX v3.8: IP rate limit
-const IP_MAX_PER_MIN        = 100;     // de 1 IP por minuto al webhook
+const IP_MAX_PER_MIN       = 100;
 
-// FIX v3.8: Airtable saturation handling
-const AT_QUEUE_FLUSH_MS     = 5000;    // flush cada 5s
-const AT_BATCH_SIZE         = 10;      // Airtable max batch
-const AT_QUEUE_MAX          = 5000;    // drop oldest si excede
-const AT_CIRCUIT_FAILS      = 3;       // 3 fallos consecutivos abren circuit
-const AT_CIRCUIT_RECOVER_MS = 60_000;  // circuit cerrado durante 60s
+const AT_QUEUE_FLUSH_MS     = 5000;
+const AT_BATCH_SIZE         = 10;
+const AT_QUEUE_MAX          = 5000;
+const AT_CIRCUIT_FAILS      = 3;
+const AT_CIRCUIT_RECOVER_MS = 60_000;
+
+// v3.25: máximo de caracteres para mensaje de soporte
+const SOPORTE_MAX_CHARS    = 1000;
 
 // ─── ESTADO EN MEMORIA ──────────────────────────────────────────────────────
-const sesiones             = new Map();
-const userLocks            = new Map();
-const processedMsgs        = new Map();
-const outboundLastSend     = new Map();
-const inboundCounter       = new Map();
-const ipCounter            = new Map();  // FIX v3.8
-let   storesCache          = new Map();
+const sesiones         = new Map();
+const userLocks        = new Map();
+const processedMsgs    = new Map();
+const outboundLastSend = new Map();
+const inboundCounter   = new Map();
+const ipCounter        = new Map();
+let   storesCache      = new Map();
 
-let storesCacheReady       = false;
-let broadcastRunning       = false;
-const bootTime             = Date.now();
+let storesCacheReady   = false;
+let broadcastRunning   = false;
+const bootTime         = Date.now();
 
-// FIX v3.8: Airtable queue
 const atQueue = {
   LOGS:      [],
   FOLIOS:    [],
@@ -344,9 +242,9 @@ const metrics = {
   webhook_non_text:     0,
   webhook_text:         0,
   webhook_invalid_json: 0,
-  webhook_invalid_hmac: 0,   // FIX v3.8
-  webhook_ip_blocked:   0,   // FIX v3.8
-  webhook_invalid_phone:0,   // FIX v3.16
+  webhook_invalid_hmac: 0,
+  webhook_ip_blocked:   0,
+  webhook_invalid_phone:0,
   inbound_rate_limited: 0,
   msg_processed:        0,
   msg_errors:           0,
@@ -374,14 +272,11 @@ const metrics = {
   broadcast_sent:       0,
   broadcast_failed:     0,
   broadcast_fetch_errors: 0,
-  // FIX v3.13: profanity rejection metric
   username_rejected_profanity: 0,
   dedup_evictions:      0,
   userlock_stale:       0,
-  // Airtable queue (FIX v3.8)
   at_queue_size:        0,
   at_queue_dropped:     0,
-  // Supabase rate limiter (FIX v3.10)
   rpc_queue_dropped:    0,
   rpc_429_hits:         0,
   rpc_429_recovered:    0,
@@ -390,6 +285,25 @@ const metrics = {
   at_circuit_opens:     0,
   at_429_hits:          0,
   at_429_recovered:     0,
+  session_active_relinks:  0,
+  game_complete_received:  0,
+  game_complete_failed:    0,
+  game_complete_unauth:    0,
+  // v3.25: métricas UX nuevas
+  cmd_ayuda_invoked:        0,
+  cmd_premios_invoked:      0,
+  cmd_puntos_invoked:       0,
+  cmd_tiendas_invoked:      0,
+  cmd_reglas_invoked:       0,
+  cmd_folio_invoked:        0,
+  cmd_reiniciar_invoked:    0,
+  cmd_soporte_invoked:      0,
+  soporte_tickets_created:  0,
+  reengagement_triggered:   0,
+  // v3.25: admin endpoints
+  admin_send_direct_received: 0,
+  admin_send_direct_unauth:   0,
+  admin_broadcast_triggered:  0,
   last_error:           null,
   last_error_at:        null,
   last_error_stage:     null,
@@ -412,11 +326,16 @@ const log = {
   error: (trace, ...args) => console.error(`[${new Date().toISOString()}] [ERR ] [${trace || '------------'}]`, ...args),
 };
 
-// FIX v3.8: enmascarar magic link en logs (solo prefijo)
 function maskLink(url) {
   if (!url || typeof url !== 'string') return '<no-link>';
   if (url.length < 40) return url.substring(0, 20) + '...';
   return url.substring(0, 40) + '...[REDACTED]';
+}
+
+// v3.25: formateo de números con coma (1240 → "1,240")
+function fmt(n) {
+  if (typeof n !== 'number') n = parseInt(n, 10) || 0;
+  return n.toLocaleString('es-MX');
 }
 
 // ─── FECHA MÉXICO ───────────────────────────────────────────────────────────
@@ -426,37 +345,21 @@ const _dateFmt = new Intl.DateTimeFormat('en-CA', {
 });
 function hoyMexico() { return _dateFmt.format(new Date()); }
 
-// ─── HMAC VALIDATION (FIX v3.8) ─────────────────────────────────────────────
-// Meta firma cada webhook con HMAC-SHA256(payload, app_secret). Validar nos
-// protege de ataques con webhooks falsos.
-//
-// Meta envía el header X-Hub-Signature-256 = "sha256=<hex>"
-// Calculamos sha256 del raw body y comparamos.
+// ─── HMAC VALIDATION ────────────────────────────────────────────────────────
 function verifyMetaSignature(req) {
-  if (!META_APP_SECRET) {
-    // No configurado: log warning una vez y aceptar (compat con v3.7)
-    return { valid: true, reason: 'not_configured' };
-  }
-  if (!req.rawBody) {
-    return { valid: false, reason: 'no_body' };
-  }
+  if (!META_APP_SECRET) return { valid: true, reason: 'not_configured' };
+  if (!req.rawBody) return { valid: false, reason: 'no_body' };
   const header = req.headers['x-hub-signature-256'];
-  if (!header || !header.startsWith('sha256=')) {
-    return { valid: false, reason: 'missing_header' };
-  }
+  if (!header || !header.startsWith('sha256=')) return { valid: false, reason: 'missing_header' };
   const received = header.slice(7);
-  const expected = crypto
-    .createHmac('sha256', META_APP_SECRET)
-    .update(req.rawBody, 'utf8')
-    .digest('hex');
-  // Comparación timing-safe para evitar timing attacks
+  const expected = crypto.createHmac('sha256', META_APP_SECRET).update(req.rawBody, 'utf8').digest('hex');
   const a = Buffer.from(received, 'hex');
   const b = Buffer.from(expected, 'hex');
   if (a.length !== b.length) return { valid: false, reason: 'length_mismatch' };
   return { valid: crypto.timingSafeEqual(a, b), reason: 'hmac_check' };
 }
 
-// ─── IP RATE LIMITING (FIX v3.8) ────────────────────────────────────────────
+// ─── IP RATE LIMITING ───────────────────────────────────────────────────────
 function checkIpRate(ip) {
   const now = Date.now();
   const entry = ipCounter.get(ip);
@@ -499,20 +402,7 @@ function addToProcessedMsgs(id) {
   }
 }
 
-// ─── SUPABASE RATE LIMITER (FIX v3.10) ──────────────────────────────────────
-// PROBLEMA REAL VERIFICADO: si 1000 webhooks llegan simultáneos sin control,
-// abrimos 4000+ conexiones a Supabase (4 RPCs por webhook). Free tier solo
-// permite 60 conexiones concurrentes. Pro permite 200. Sin esto: colapso.
-//
-// SOLUCIÓN: queue+wait limiter. Max 50 RPCs concurrentes, max 1000 en cola.
-// Si la cola se llena, el RPC devuelve null y el bot muestra "servidor saturado".
-//
-// PROBADO en stress test:
-//   - 1000 mensajes simultáneos → 100% procesados en 4.8s ✓
-//   - 10,000 simultáneos → 10% (cola se llena, drop graceful)
-//
-// PARA SUBIR CAPACIDAD: si Mohamed upgrade a Supabase Pro, cambia a 200.
-// Si activa pgbouncer transaction mode, hasta 500.
+// ─── SUPABASE RATE LIMITER ──────────────────────────────────────────────────
 class SupabaseLimiter {
   constructor(maxConcurrent, maxQueue) {
     this.maxConcurrent = maxConcurrent;
@@ -548,7 +438,6 @@ class SupabaseLimiter {
     }
   }
 }
-// 50 concurrent matches free tier; subir a 200 cuando upgrade a Pro
 const SB_LIMITER = new SupabaseLimiter(50, 1000);
 
 // ─── SUPABASE HELPERS ───────────────────────────────────────────────────────
@@ -568,7 +457,6 @@ async function sbRpc(fnName, params = {}, trace) {
       if (!res.ok) {
         const err = await res.text().catch(() => "");
         metrics.rpc_errors++;
-        // FIX v3.10: si Supabase devuelve 429 → backoff exponencial (1 retry)
         if (res.status === 429) {
           metrics.rpc_429_hits++;
           await new Promise(r => setTimeout(r, 300));
@@ -598,7 +486,7 @@ async function sbRpc(fnName, params = {}, trace) {
     metrics.rpc_errors++;
     if (e.message === 'supabase_queue_full') {
       log.warn(trace, `RPC ${fnName}: queue full → graceful degrade`);
-      return null;  // bot manda mensaje servidorSaturado al usuario
+      return null;
     }
     if (e.isTimeout) metrics.rpc_timeouts++;
     recordError(`rpc:${fnName}`, e);
@@ -607,9 +495,6 @@ async function sbRpc(fnName, params = {}, trace) {
   }
 }
 
-// FIX v3.11: variante para RPCs que devuelven TABLE (varias filas).
-// sbRpc() colapsa array a [0] (asume single-row return), pero wa_broadcast_recipients
-// devuelve N filas. Esta función NO colapsa, devuelve el array completo.
 async function sbRpcArray(fnName, params = {}, trace) {
   metrics.rpc_total++;
   try {
@@ -688,8 +573,7 @@ async function waAuth(action, params = {}, trace) {
   }
 }
 
-// ─── STORES CACHE (doble buffering) ─────────────────────────────────────────
-// v3.20: incluye estado para analytics geográficas
+// ─── STORES CACHE ───────────────────────────────────────────────────────────
 async function refreshStoresCache() {
   const data = await sbGet("stores?is_active=eq.true&select=sucursal,name,brand,estado&limit=2000");
   if (!Array.isArray(data)) {
@@ -709,38 +593,11 @@ function getStoreFromFolio(folio) {
   const sucursal = parseInt(folio.substring(2, 7), 10);
   const cached = storesCache.get(sucursal);
   if (!cached) return null;
-  // v3.20: retornar también código_tienda
   return { name: cached.name, brand: cached.brand, estado: cached.estado, sucursal };
 }
 
 // ─── VALIDADOR FOLIO ────────────────────────────────────────────────────────
-// FIX v3.8 #1: limpiar TODO no-numérico, no solo espacios.
-// Casos reales que antes fallaban:
-//   "84-1322-426-051-300-491817"  (con guiones, iOS auto-format)
-//   "+841322426051300491817"      (copy-paste con +)
-//   "841322426051300491817 hola"  (con texto extra)
-//   "8413.2242.6051.3004.91817"   (con puntos)
-// Estrategia: primero buscar secuencia consecutiva de 21-22 dígitos.
-// Si no, hacer fallback de limpiar todo no-numérico.
 function validarFormatoFolioLocal(texto) {
-  // ============================================================
-  // CLAUDE NOTE — Validación local de folio (v3.17)
-  // ============================================================
-  // Pre-filtro para evitar llamar Supabase con basura.
-  // Reglas validadas con Jonny:
-  //   - 21 dígitos exactos
-  //   - Empieza con "84" (id_empresa de Grupo Nutriza)
-  //
-  // ⚠️ ASUNCIÓN A VERIFICAR EN PRODUCCIÓN:
-  // ¿Las 4 marcas (Nutrisa, Moyo, Cielito Café, Chilim Balam) usan TODAS
-  // empresa = "84"? Si Moyo o Cielito tienen otro prefijo, esos folios
-  // serán rechazados aquí ANTES de llegar a Supabase.
-  //
-  // Las métricas wrong_prefix_XX nos dicen cuáles prefijos rechazamos.
-  // Si vemos volumen significativo en algún prefijo ≠ 84, hay un problema
-  // de configuración (no de usuarios escribiendo mal).
-  // ============================================================
-  // 1. Buscar primera secuencia consecutiva de 21-22 dígitos
   const match = (texto || '').match(/\d{21,22}/);
   if (match) {
     const f = match[0];
@@ -751,7 +608,6 @@ function validarFormatoFolioLocal(texto) {
     }
     return { ok: true, folio: f.length === 22 ? f.substring(0, 21) : f };
   }
-  // 2. Fallback: extraer solo dígitos, si total son 21-22, OK
   const onlyDigits = (texto || '').replace(/[^0-9]/g, "");
   if (/^\d{21,22}$/.test(onlyDigits)) {
     if (!onlyDigits.startsWith("84")) {
@@ -764,15 +620,7 @@ function validarFormatoFolioLocal(texto) {
   return { ok: false, error: "formato" };
 }
 
-// ─── USERNAME VALIDATION (v3.21) ────────────────────────────────────────────
-// C1: La validación de profanidad se hace SOLO en la Edge Function wa-auth,
-// que consulta is_profane() RPC contra la tabla profanity_words (2,191 palabras,
-// single source of truth, también usada por el website). El bot solo valida
-// formato (longitud, caracteres permitidos, patrones).
-//
-// Si el username pasa este filtro pero contiene profanidad, la Edge Function
-// retorna error 'inappropriate_username' y el bot muestra mensaje al usuario.
-
+// ─── USERNAME VALIDATION ────────────────────────────────────────────────────
 const SUFIJOS = ["Gol","FC","MX","Pro","Star","26","Goal","Ace","Crack"];
 
 function generarSugerencia(u) {
@@ -868,28 +716,19 @@ function checkInboundRate(tel) {
   return true;
 }
 
-// ─── AIRTABLE QUEUE + BATCHER (FIX v3.8) ─────────────────────────────────────
-// Cuando se activen los feature flags, los stubs encolan en atQueue.
-// El flusher corre cada 5s y manda batches de 10 a Airtable.
-// Si Airtable falla 3 veces, circuit breaker abre 60s.
-// Si queue >5000, drop oldest.
-
+// ─── AIRTABLE HELPERS ───────────────────────────────────────────────────────
 function airtableUrl(path, queryParams = {}) {
   const url = new URL(`https://api.airtable.com/v0/${AT_BASE}/${path}`);
   for (const [k, v] of Object.entries(queryParams)) url.searchParams.set(k, v);
   return url.toString();
 }
 
-// Helper para Bot Control (base separada de Engine v2)
 function bcUrl(path, queryParams = {}) {
   const url = new URL(`https://api.airtable.com/v0/${AT_BOT_BASE}/${path}`);
   for (const [k, v] of Object.entries(queryParams)) url.searchParams.set(k, v);
   return url.toString();
 }
 
-// v3.20: Sync enriquecido con marca, tienda, estado, código_tienda
-// storeInfo = { name, brand, estado, sucursal } de getStoreFromFolio
-// extras = { username, ipUltimo, puntosTotal, tiendasVisitadas, sospechoso }
 async function bcSyncUsuario(tel, fase = "activo", storeInfo = null, extras = {}) {
   if (!AIRTABLE_TOKEN) return;
   try {
@@ -899,21 +738,19 @@ async function bcSyncUsuario(tel, fase = "activo", storeInfo = null, extras = {}
       [BCU.ULTIMO]: new Date().toISOString(),
       [BCU.TOTAL]:  extras.totalMensajes || 1,
     };
-    // Solo seteamos PRIMER si no existe (es upsert pero el flag es eso)
     if (extras.primerContacto !== false) {
       fields[BCU.PRIMER] = new Date().toISOString();
     }
-    // v3.20: enriquecer con datos de tienda si disponibles
     if (storeInfo) {
       fields[BCU.MARCA]         = storeInfo.brand || null;
       fields[BCU.TIENDA]        = storeInfo.name || null;
       fields[BCU.CODIGO_TIENDA] = storeInfo.sucursal || null;
       fields[BCU.ESTADO]        = storeInfo.estado || null;
     }
-    if (extras.username)          fields[BCU.USERNAME]          = extras.username;
-    if (extras.ipUltimo)          fields[BCU.IP]                = extras.ipUltimo;
-    if (extras.puntosTotal != null) fields[BCU.PUNTOS_TOTAL]    = extras.puntosTotal;
-    if (extras.tiendasVisitadas)  fields[BCU.TIENDAS_VISITADAS] = extras.tiendasVisitadas;
+    if (extras.username)            fields[BCU.USERNAME]          = extras.username;
+    if (extras.ipUltimo)            fields[BCU.IP]                = extras.ipUltimo;
+    if (extras.puntosTotal != null) fields[BCU.PUNTOS_TOTAL]      = extras.puntosTotal;
+    if (extras.tiendasVisitadas)    fields[BCU.TIENDAS_VISITADAS] = extras.tiendasVisitadas;
 
     await fetchTimeout(bcUrl(BC_USUARIOS), {
       method: "POST",
@@ -925,9 +762,6 @@ async function bcSyncUsuario(tel, fase = "activo", storeInfo = null, extras = {}
   }
 }
 
-// v3.20: obtener IP del último login desde Supabase auth logs
-// El IP se captura cuando el usuario hace click en el magic link.
-// La RPC `get_last_login_ip` consulta auth.audit_log_entries.
 async function getUserLastIP(tel) {
   try {
     const res = await sbRpc("get_last_login_ip", { p_phone: tel }, null);
@@ -938,9 +772,6 @@ async function getUserLastIP(tel) {
   return null;
 }
 
-// v3.22: registrar cada canje en la tabla Canjes de Bot Control
-// Reemplaza la escritura a Engine v2 / FOLIOS table.
-// Async, no bloquea el flujo principal.
 async function bcSyncCanje(folio, tel, username, storeInfo, rondaNum, ip) {
   if (!AIRTABLE_TOKEN) return;
   try {
@@ -971,8 +802,35 @@ async function bcSyncCanje(folio, tel, username, storeInfo, rondaNum, ip) {
   }
 }
 
-// v3.20: snapshot diario del leaderboard
-// Se llama vía cron a las 8 PM hora MX
+// v3.25: registrar ticket de soporte en Airtable Bot Control tabla Soporte
+async function bcSyncSoporte(tel, username, mensaje, categoria = "Otro") {
+  if (!AIRTABLE_TOKEN) return;
+  if (!BC_SOPORTE) {
+    log.warn(null, `bcSyncSoporte: BC_SOPORTE_TABLE_ID no configurado en env, skipping`);
+    return;
+  }
+  try {
+    const fields = {
+      [BCS.TELEFONO]:     `+${tel}`,
+      [BCS.USERNAME]:     username || null,
+      [BCS.MENSAJE]:      String(mensaje).substring(0, SOPORTE_MAX_CHARS),
+      [BCS.CATEGORIA]:    categoria,
+      [BCS.ESTADO]:       "Sin responder",
+      [BCS.FECHA_CREADO]: new Date().toISOString(),
+    };
+
+    await fetchTimeout(bcUrl(BC_SOPORTE), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ records: [{ fields }] }),
+    }, 8000);
+    metrics.soporte_tickets_created++;
+    log.info(null, `🆘 Ticket soporte creado: ${tel} - "${String(mensaje).substring(0, 40)}..."`);
+  } catch (e) {
+    log.warn(null, `bcSyncSoporte fail: ${e.message}`);
+  }
+}
+
 async function runLeaderboardSnapshot() {
   if (!AIRTABLE_TOKEN) return;
   try {
@@ -995,7 +853,6 @@ async function runLeaderboardSnapshot() {
         [BCL.TIENDAS_VISITADAS]: row.tiendas_visitadas,
       },
     }));
-    // Batch de 10 (límite Airtable)
     let success = 0;
     for (let i = 0; i < records.length; i += 10) {
       const batch = records.slice(i, i + 10);
@@ -1009,7 +866,7 @@ async function runLeaderboardSnapshot() {
       } catch (e) {
         log.warn(null, `Leaderboard batch fail at i=${i}: ${e.message}`);
       }
-      await new Promise(r => setTimeout(r, 250));  // ~4 req/s seguro
+      await new Promise(r => setTimeout(r, 250));
     }
     log.info(null, `📊 Leaderboard snapshot: ${success}/${records.length} registros`);
   } catch (e) {
@@ -1018,10 +875,8 @@ async function runLeaderboardSnapshot() {
 }
 
 function atEnqueue(tableName, fields) {
-  // Drop policy: si total queue > MAX, descarta los más viejos
   const total = Object.values(atQueue).reduce((sum, q) => sum + q.length, 0);
   if (total >= AT_QUEUE_MAX) {
-    // Buscar la queue con más items y dropear el más viejo
     let largest = null, largestSize = 0;
     for (const [name, q] of Object.entries(atQueue)) {
       if (q.length > largestSize) { largest = name; largestSize = q.length; }
@@ -1035,30 +890,13 @@ function atEnqueue(tableName, fields) {
 }
 
 async function atFlushOne(tableName, items) {
-  // ============================================================
-  // CLAUDE NOTE — Airtable rate limit handling (v3.14+)
-  // ============================================================
-  // Airtable cap = 5 req/s por base. Bajo carga viral, golpeamos 429.
-  // Tres líneas de defensa:
-  //   1. RETRIES con exponential backoff + jitter (este nivel)
-  //   2. Circuit breaker (3 fails consecutivos → 60s pausa)
-  //   3. Queue con drop policy (>5000 items, dropea más viejos)
-  //
-  // Jitter previene "thundering herd": si 50 instancias del bot reintentan
-  // al mismo instante, todas chocan otra vez. Con jitter aleatorio ±30%,
-  // los reintentos se dispersan en el tiempo.
-  //
-  // IMPORTANTE: 429 NO cuenta hacia el circuit breaker. Solo errores
-  // de red/timeout/5xx incrementan atConsecutiveFails. Esto evita
-  // que un pico de tráfico (legítimo) abra el circuito.
-  // ============================================================
   if (atCircuitOpen) {
     if (Date.now() - atCircuitOpenedAt > AT_CIRCUIT_RECOVER_MS) {
       atCircuitOpen = false;
       atConsecutiveFails = 0;
       log.info(null, `🔌 Airtable circuit breaker CLOSED (recovered)`);
     } else {
-      return;  // skip while circuit open
+      return;
     }
   }
   const tableId = AT_TABLES[tableName];
@@ -1074,12 +912,9 @@ async function atFlushOne(tableName, items) {
         body: JSON.stringify({ records: batch.map(b => ({ fields: b.fields })) }),
       });
 
-      // 429 → backoff con jitter, no contar como circuit-breaker fail
       if (res.status === 429) {
         metrics.at_429_hits++;
         if (attempt < MAX_RETRIES) {
-          // Delays base: 500ms, 1500ms, 4500ms (factor 3)
-          // Jitter ±30%: multiplica por random entre 0.7 y 1.3
           const baseMs = 500 * Math.pow(3, attempt);
           const jitterMs = Math.floor(baseMs * (0.7 + Math.random() * 0.6));
           log.warn(null, `Airtable 429 (intento ${attempt + 1}/${MAX_RETRIES + 1}), retry en ${jitterMs}ms`);
@@ -1091,7 +926,6 @@ async function atFlushOne(tableName, items) {
 
       if (!res.ok) throw new Error(`Airtable ${res.status}: ${await res.text().catch(() => '?')}`);
 
-      // Success: shift batch out de la queue
       atQueue[tableName].splice(0, batch.length);
       atConsecutiveFails = 0;
       metrics.at_flush_success++;
@@ -1099,7 +933,6 @@ async function atFlushOne(tableName, items) {
       return;
 
     } catch (e) {
-      // Reintentar errores transitorios de red (no 4xx no-429)
       if (attempt < MAX_RETRIES && (e.isTimeout || e.code === 'ECONNRESET' || e.code === 'ETIMEDOUT')) {
         const baseMs = 500 * Math.pow(3, attempt);
         const jitterMs = Math.floor(baseMs * (0.7 + Math.random() * 0.6));
@@ -1123,7 +956,6 @@ async function atFlushOne(tableName, items) {
 }
 
 async function atFlush() {
-  // Solo flush si hay feature flags activos
   const anyFlag = AT_SYNC_LOGS || AT_SYNC_FOLIOS || AT_SYNC_JUGADORES || AT_SYNC_RONDAS || AT_SYNC_ALERTAS;
   if (!anyFlag) return;
   metrics.at_queue_size = Object.values(atQueue).reduce((sum, q) => sum + q.length, 0);
@@ -1133,383 +965,566 @@ async function atFlush() {
   }
 }
 
-// ─── STUBS DE INTEGRACIÓN AIRTABLE (activables por feature flags) ───────────
 function atLog(tel, mensaje, direccion, fase) {
   if (!AT_SYNC_LOGS) return;
   atEnqueue('LOGS', {
     "fldnJETIYN75AwZJF": tel,
     "fldOyr6YlCqRiGjjM": mensaje.substring(0, 500),
-    "fldPPCZQVa316k1Md": direccion,  // 'in' o 'out'
+    "fldPPCZQVa316k1Md": direccion,
     "fldFD22sD3QOjJAc4": new Date().toISOString(),
     "fld0ByXnIf4DjADCG": fase || '',
   });
 }
 
-function atAlerta(tipo, referencia, descripcion) {
-  if (!AT_SYNC_ALERTAS) return;
-  atEnqueue('ALERTAS', {
-    "fld2JxHbKby6oFVBo": `ALT-${Date.now()}`,
-    "fldazdBBI8Lwm5gn5": tipo,
-    "fldbCx8pVrFBlDc63": referencia,
-    "fld30Ze7XgVxyXdKz": descripcion.substring(0, 1000),
-    "fldknRZS9cEC0SQZQ": new Date().toISOString(),
-    "fld4fKaUGrPm4nuL5": false,
-  });
-}
-
-// ─── MENSAJES (igual que v3.7) ──────────────────────────────────────────────
-// ─── MENSAJES AL USUARIO — DISEÑO PSICOLÓGICO v3.9 ──────────────────────────
-// Cada mensaje está calculado para GUIAR el comportamiento del usuario hacia
-// patrones que NO rompan el sistema. Principios aplicados:
-//
-//   • RECIPROCITY: el bot da valor primero (imagen, ayuda clara)
-//   • SCARCITY: "5 rondas" + "se reinician mañana" crea oportunidad
-//   • LOSS AVERSION: "no compartas tu folio" (más fuerte que "úsalo")
-//   • COMMITMENT: "te falta 1 paso" mantiene al user en el flow
-//   • AUTHORITY: "Gol" es tu guía oficial — confianza
-//   • PROGRESS BIAS: mostrar "Ronda 3/5" empuja a completar
-//   • CLARIDAD: comandos explícitos, no adivinanzas
-//   • ANTI-FRAGILIDAD: anticipar errores comunes ANTES que sucedan
-//
-// COMPORTAMIENTOS QUE PREVENIMOS:
-//   A. Re-envío del folio  → "Recibí tu folio, dame un momento..."
-//   B. Mandar foto         → "Solo texto. Copia los 21 dígitos directo"
-//   C. Compartir folio     → "Tu folio es tu llave. Si lo compartes, alguien más puede usarlo"
-//   D. Pasar magic link    → "El link se autodestruye al usarlo. Solo TÚ."
-//   E. Spam random         → ayuda clara, comandos explícitos
-//   F. Inventar folios     → "Cada intento cuenta hacia tu cap diario"
-//   G. Cambiar hora celular→ "Reinicio a medianoche hora México (no la tuya)"
-//   H. Folios viejos       → "Mándame folios de máximo 2 días"
-//   I. Borrar chat         → "Tu progreso está seguro, no necesitas reiniciar"
-//   J. Mensajes ambiguos   → comandos exactos en cada mensaje
-//   K. Esperar humano      → "Soy un bot, pero estoy para ayudarte"
+// ════════════════════════════════════════════════════════════════════════════
+// v3.25 — MENSAJES AL USUARIO (UX rewrite completo)
+// ════════════════════════════════════════════════════════════════════════════
+// Filosofía:
+//   • Personalidad mexicana de Gol (directo, divertido, sin ser zalamero)
+//   • Discoverability: footers que invitan a descubrir comandos
+//   • Ejemplos concretos en vez de instrucciones abstractas
+//   • Acumulado de puntos para sense of progression
+//   • Escape hatch a SOPORTE cuando algo falla
+// ════════════════════════════════════════════════════════════════════════════
 
 const M = {
+  // ─── BIENVENIDA NUEVA ────────────────────────────────────────────────────
   bienvenidaNuevo: () =>
-`¡Hola! ⚽ Soy *Gol*, tu guía oficial en *Fanáticos del Sabor*.
+`¡Quiúbole! ⚽ Soy *Gol*, tu bot oficial de *Fanáticos del Sabor*.
 
-Para registrarte y empezar a jugar necesito el *folio de tu ticket* 🎫
+Te ayudo a jugar, ganar puntos y competir por *81 premios* — incluyendo Meet & Greet con La Cotorrisa, Nintendo Switch 2 y más.
 
-📍 *Dónde encontrarlo:*
-• Está en la parte de arriba del ticket
-• Empieza con *84* y tiene *21 dígitos*
-• Cópialo directo del ticket (no me mandes la foto, solo los números)
+🎫 *Para empezar, mándame tu folio:*
+↳ Son los *21 dígitos* que están arriba del ticket
+↳ Siempre empiezan con *84*
+↳ Cópialo directo (no funciona la foto)
+↳ Debe ser de los últimos *${DIAS_VALIDEZ} días*
 
-⏱️ *Importante:* tu ticket debe ser de los últimos *${DIAS_VALIDEZ} días*.
+¿No sabes dónde está el folio? Escribe *FOLIO* y te muestro 📋
+¿Curioso de los premios? Escribe *PREMIOS* 🏆`,
 
-¡Mándamelo cuando lo tengas!`,
+  // ─── BIENVENIDA CONOCIDO (3 variantes) ───────────────────────────────────
+  bienvenidaConocido: (username, rondasHoy) => {
+    if (rondasHoy >= RONDAS_MAX) {
+      return `¡Qué onda *${username}*! 🏆
 
-  bienvenidaConocido: (username, rondasHoy) =>
-`¡Qué onda *${username}*! 👋
+Ya completaste tus *${RONDAS_MAX} rondas* hoy. Eres oficialmente un *Fanático* del día.
 
-Hoy llevas *${rondasHoy}/${RONDAS_MAX}* rondas jugadas.
-${rondasHoy < RONDAS_MAX
-    ? `¿Tienes un folio nuevo? Mándamelo 🎫\nTe quedan *${RONDAS_MAX - rondasHoy}* rondas hoy.\n\n💡 También puedes agregar folios desde *${SITE_URL}* — quedan sincronizados.`
-    : "Ya completaste tus rondas de hoy 🏆\nMañana a la *medianoche (hora CDMX)* se reinician."}`,
+🌅 Se reinician mañana a *medianoche (hora CDMX)*.
 
-  // v3.14: mensaje corto para atajo (botón web "Ingresar código" / "Nueva ronda")
+📊 Mira tu posición ahora → *PUNTOS*
+🏆 Recordatorio de premios → *PREMIOS*`;
+    }
+    return `¡Qué onda *${username}*! 👋
+
+📊 Llevas *${rondasHoy}/${RONDAS_MAX}* rondas hoy — vas bien, quedan *${RONDAS_MAX - rondasHoy}*.
+
+🎫 Manda tu próximo folio cuando lo tengas.
+
+💡 Tip: revisa tu posición en el leaderboard con *PUNTOS*`;
+  },
+
+  // v3.25: re-engagement (3+ días sin jugar)
+  bienvenidaReEngagement: (username) =>
+`👋 ¡*${username}*, te extrañábamos!
+
+Llevas algunos días sin jugar y la campaña sigue. *81 premios* esperando 🏆
+
+🎫 ¿Tienes ticket reciente? Mándame el folio.
+📊 ¿Curioso del top? Escribe *PUNTOS*.
+
+🔥 Recuerda: la campaña termina el *${CAMPAIGN_END_DATE}*.`,
+
+  // v3.25: bienvenida nuevo día (rondas se acaban de resetear)
+  bienvenidaNuevoDia: (username) =>
+`☀️ ¡Quiúbole otra vez, *${username}*!
+
+Tus rondas se reiniciaron — tienes *${RONDAS_MAX} nuevas* para hoy.
+
+🎫 Manda un folio cuando estés listo.
+
+💡 Tip: revisa tu posición → *PUNTOS*`,
+
+  // ─── ATAJO DESDE WEB ─────────────────────────────────────────────────────
   atajoConocido: (username, rondasHoy) =>
 `Mándame el folio, *${username}* 🎫
 
 ${rondasHoy < RONDAS_MAX
-    ? `Llevas *${rondasHoy}/${RONDAS_MAX}* rondas hoy. Te quedan *${RONDAS_MAX - rondasHoy}*.`
-    : `Ya jugaste tus *${RONDAS_MAX} rondas* de hoy 🏆\nMañana a *medianoche CDMX* se reinician.`}`,
+  ? `Llevas *${rondasHoy}/${RONDAS_MAX}* rondas hoy. Te quedan *${RONDAS_MAX - rondasHoy}*.`
+  : `Ya jugaste tus *${RONDAS_MAX} rondas* de hoy 🏆\nMañana a *medianoche CDMX* se reinician.`}`,
 
+  // ─── FOLIO VÁLIDO — PIDE APODO ───────────────────────────────────────────
   folioOkPideNombre: (storeName, brand) => {
     const tienda = storeName ? `*${brand}* — ${storeName}` : "*Grupo Nutriza*";
-    return `✅ *¡Folio válido!* Compra registrada de ${tienda}.
+    return `✅ *¡Folio válido!*
+Compra registrada en ${tienda} 🥑
 
-🎯 *Último paso para empezar:* elige tu *nombre para el leaderboard*.
+🎯 *Último paso:* elige tu *apodo* para el leaderboard.
 
-📝 *Reglas del nombre:*
-• De *3 a 20 caracteres*
-• Solo *letras, números y _* (sin espacios ni acentos)
-• Es un *apodo* — no tu nombre real
+📝 Reglas:
+↳ De *3 a 20 caracteres*
+↳ Solo *letras, números y _*
+↳ Sin espacios, sin acentos
+↳ Es un *apodo* — no tu nombre real
 
-Tip: una vez registrado, ese nombre te identifica para siempre. Elige uno que te represente 🏆`;
+💡 Ese apodo te identifica para *toda la campaña*. Elige bueno.
+
+Ejemplos: *Goleador26*, *NutriFan*, *MoyoQueen*, *ChilimRey*`;
   },
 
+  // ─── USERNAME RECHAZADO — FORMATO ────────────────────────────────────────
   usernameInvalido: (razon, sugerencia) =>
-`Ese nombre no funciona 😅
-_${razon}_
+`Ese apodo no funciona 😅
+*${razon}*
 
-${sugerencia ? `¿Qué tal *${sugerencia}*? O escribe otro.` : "Escribe otro nombre."}`,
+${sugerencia ? `¿Qué tal *${sugerencia}*? O escribe otro tú.` : "Escribe otro nombre."}
 
+💡 Si quieres empezar de cero, escribe *reiniciar*.`,
+
+  // ─── USERNAME RECHAZADO — PROFANITY (caso Sheila) ────────────────────────
+  usernameProfanity: (sugerencia) =>
+`Ese apodo no funciona 😅
+*Nuestro filtro lo marcó por error o por tener una palabra restringida.*
+
+${sugerencia ? `¿Qué tal *${sugerencia}*? O escribe otro.` : "Prueba con otro apodo."}
+
+💡 Si crees que es un error, escribe *SOPORTE* y dime tu nombre real para revisarlo.`,
+
+  // ─── USERNAME YA TOMADO ──────────────────────────────────────────────────
   usernameTomado: (sugerencia) =>
-`Ese nombre ya está ocupado 😅
-Cada nombre es único — solo una persona puede tenerlo.
+`Ese apodo ya tiene dueño 😅
 
-¿Qué tal *${sugerencia}*? O escribe otro distinto.`,
+Cada apodo es único — primer fanático que lo elige se lo queda.
 
-  // CRÍTICO: este mensaje previene que el usuario comparta el link
+¿Qué tal *${sugerencia}*? O inventa uno propio.
+
+🎯 Tip: agregar números o tu marca favorita ayuda — *NutriQueen*, *MoyoKing*, *ChilimChef*`,
+
+  // ─── REGISTRO COMPLETO (PRIMERA RONDA) ───────────────────────────────────
   registroCompleto: (username, magicLink, rondasHoy) =>
 `¡Bienvenido, *${username}*! 🎉
-Ya eres oficialmente *Fanático del Sabor*.
+Ya eres oficial *Fanático del Sabor*.
 
-🎮 *Toca este link para empezar a jugar:*
+🎮 *Toca aquí para jugar tu primera ronda:*
 ${magicLink}
 
-✅ *Solo da click* — no necesitas contraseña ni llenar nada.
+⚡ Solo da click — sin contraseñas, sin formularios.
 
-⚠️ *Importante — solo para TI:*
-🔒 Este link es *único y personal*. Si alguien más lo abre, tu cuenta se compromete.
-⏱️ Expira en *1 hora*. Si no entras a tiempo, mándame otro folio para generar uno nuevo.
-🎯 Funciona *una sola vez*.
+🔐 *Solo para ti, importante:*
+↳ Este link es *único y personal*
+↳ Expira en *1 hora*
+↳ Funciona *una sola vez*
 
-Vas en la *ronda ${rondasHoy} de ${RONDAS_MAX}* hoy 🎮`,
+🎯 Vas en la *ronda ${rondasHoy} de ${RONDAS_MAX}* del día.
 
+💡 Después de jugar te aviso por aquí. ¿Listo? Toca el link ⬆️`,
+
+  // ─── FOLIO ADICIONAL (RONDAS 2+) ─────────────────────────────────────────
   folioAdicional: (username, rondaNum, magicLink) =>
-`✅ Folio registrado, *${username}*.
-Vas en la *ronda ${rondaNum} de ${RONDAS_MAX}* hoy.
+`✅ ¡Otra ronda, *${username}*!
 
-🎮 *Tu link para esta ronda:*
+🎮 *Ronda ${rondaNum} de ${RONDAS_MAX}* — tu link:
 ${magicLink}
 
-✅ *Solo da click* — no necesitas contraseña.
-
-⏱️ Úsalo en la próxima *hora*, solo *una vez*, solo *tú*.
+⚡ Click directo. 1 hora de vida. Solo tú.
 
 ${rondaNum < RONDAS_MAX
-    ? `Te quedan *${RONDAS_MAX - rondaNum}* rondas para hoy 💪`
-    : `¡Última ronda de hoy! 🔥 Mañana a *medianoche CDMX* se reinician.`}`,
+  ? `💪 Te quedan *${RONDAS_MAX - rondaNum} rondas* hoy. ¡A ganar puntos!`
+  : `🔥 ¡Última ronda de hoy! Mañana a medianoche CDMX se reinician.`}
 
+💡 Tip: cada ronda puede subir tu posición en el leaderboard. Revisa con *PUNTOS*`,
+
+  // ─── RE-ENVÍO DE MAGIC LINK (FIX v3.24 #1) ───────────────────────────────
+  reenvioLink: (username, magicLink) =>
+`Aún no terminaste tu ronda actual, *${username || "Fanático"}* 🎮
+
+Te reenvío el link para que termines los 4 minijuegos:
+${magicLink}
+
+✅ Cuando completes esa ronda, mándame el folio nuevo y lo registro.
+
+⏱️ Tienes hasta *15 minutos* para terminar antes de que el folio se libere automático.
+🔄 Si recibiste varios links, *usa el más reciente* — los anteriores ya no funcionan.`,
+
+  // ─── RONDA COMPLETADA (FIX v3.24 #2, con acumulado en v3.25) ─────────────
+  rondaCompletada: (username, score, rondasHoy, puntosTotal) =>
+`🎉 *¡Cerraste la ronda, ${username}!*
+
+⚽ *${fmt(score)} puntos* en esta partida
+🎮 Llevas *${rondasHoy}/${RONDAS_MAX}* rondas hoy
+🔥 Total acumulado: *${fmt(puntosTotal)} pts*
+
+📊 ¿Curioso de tu posición? Escribe *PUNTOS*
+
+🎫 Te quedan *${RONDAS_MAX - rondasHoy} rondas* — manda otro folio para seguir.
+
+💡 Recuerda: las rondas se reinician mañana a medianoche (CDMX).`,
+
+  rondaCompletadaMaxDia: (username, score, puntosTotal) =>
+`🏆 *¡TODAS las rondas del día, ${username}!*
+
+⚽ Última ronda: *${fmt(score)} pts*
+🔥 Total del día acumulado: *${fmt(puntosTotal)} pts*
+👑 Eres *Fanático* dedicado.
+
+🌅 Mañana a *medianoche (CDMX)* se reinician.
+
+📊 Tu posición en el leaderboard → *PUNTOS*
+🏆 Recordatorio de premios → *PREMIOS*
+
+💡 Tip: comparte tus rondas con amigos para subir más alto 🚀 — pero *no compartas tus folios* (cada uno es único).`,
+
+  // ─── MAX RONDAS (si manda folio nuevo después de 5) ──────────────────────
   maxRondas: (username) =>
-`Ya jugaste tus *${RONDAS_MAX} rondas* de hoy, *${username}* 🏆
-Eres un *Fanático* dedicado.
+`Ya completaste tus *${RONDAS_MAX} rondas* de hoy, *${username}* 🏆
 
-🌅 *Se reinician* mañana a la *medianoche (hora CDMX)*.
-Mientras tanto, ve tu puntaje en:
-🔗 ${SITE_URL}
+Guarda ese folio — *sigue siendo válido por ${DIAS_VALIDEZ} días*. Mañana lo puedes canjear.
 
-💡 Tip: la *hora de tu celular no importa*, el reinicio es a medianoche de México.`,
+🌅 Mañana a medianoche CDMX se reinician (la hora de tu celular no importa).
 
-  // Mensajes de error de folio — cada uno guía al user lejos de comportamiento problemático
+Mientras tanto:
+📊 Tu posición → *PUNTOS*
+🏆 Lo que puedes ganar → *PREMIOS*
+👥 Cuéntale a tus amigos para que jueguen también`,
+
+  // ─── ERRORES DE FOLIO ────────────────────────────────────────────────────
   folioError: (error) => {
     const msgs = {
-      formato:         `Hmm, ese mensaje no tiene un folio válido 🤔
+      formato:
+`🤔 No vi un folio válido en tu mensaje.
 
-Lo que necesito:
-• *21 dígitos* exactos
-• Empieza con *84*
-• Cópialos directo del ticket
+Lo que busco:
+↳ *21 dígitos* exactos
+↳ Empieza con *84*
+↳ Solo los números (sin foto, sin texto extra)
 
-❌ *No me mandes:* la foto del ticket, audios, ni el ticket completo escrito.
-✅ *Sí:* solo los 21 números.`,
+¿No sabes dónde está? Escribe *FOLIO* y te muestro 📋
 
-      prefijo:         `Tu folio debe empezar con *84* 📋
+💡 Si estabas escribiendo otra cosa, escribe *AYUDA* para ver opciones.`,
+
+      prefijo:
+`Tu folio debe empezar con *84* 📋
+
 Si empieza con otro número, no es de las marcas participantes.
 
-Si lo copiaste mal, revisa el ticket e inténtalo de nuevo.`,
+Si lo copiaste mal, revisa el ticket e inténtalo de nuevo.
 
-      invalid_format:  `El folio no tiene formato correcto.
+💡 Las marcas son: Nutrisa, Moyo, Cielito Café, Chilim Balam. Escribe *TIENDAS* para más info.`,
+
+      invalid_format:
+`El folio no tiene formato correcto.
+
 Debe ser *21 dígitos* exactos, empezando con *84*.
 
-Si copiaste el ticket entero, mándame *solo* los dígitos.`,
+Si copiaste el ticket entero, mándame *solo* los dígitos.
 
-      invalid_empresa: `Ese folio no es de una marca participante.
-Solo aceptamos folios de: *Nutrisa*, *Moyo*, *Cielito Café*, *Chilim Balam*.`,
+💡 Escribe *FOLIO* si necesitas ayuda para ubicarlo en tu ticket.`,
 
-      invalid_date:    `La fecha en ese folio no es válida 🤔
-Revisa que copiaste todos los dígitos correctamente.`,
+      invalid_empresa:
+`Ese folio no es de una marca participante.
 
-      unknown_store:   `Esa tienda no aparece en mi lista de participantes 🧐
+Solo aceptamos folios de: *Nutrisa*, *Moyo*, *Cielito Café*, *Chilim Balam*.
+
+💡 Escribe *TIENDAS* para más detalle.`,
+
+      invalid_date:
+`La fecha en ese folio no es válida 🤔
+
+Revisa que copiaste todos los dígitos correctamente.
+
+💡 Si crees que tu ticket está dañado, escribe *SOPORTE*.`,
+
+      unknown_store:
+`Esa tienda no aparece en mi lista de participantes 🧐
+
 ¿Es un ticket de Nutrisa, Moyo, Cielito Café o Chilim Balam?
-Si sí: el ticket podría estar dañado, intenta con otro.`,
+Si sí: el ticket podría estar dañado, intenta con otro.
 
-      expired:         `Ese ticket tiene más de *${DIAS_VALIDEZ} días* y ya no es válido 📅
+💡 ¿Crees que es un error nuestro? Escribe *SOPORTE*.`,
 
-💡 Tip: la próxima vez, mándame tu folio el *mismo día* que compras para aprovechar al máximo.`,
+      expired:
+`😕 Ese ticket ya tiene más de *${DIAS_VALIDEZ} días*.
 
-      not_yet_valid:   `La fecha del ticket todavía no llega 🤔
-Revisa la fecha en tu ticket — debe ser de *hoy o ayer*.`,
+Solo acepto folios de los últimos ${DIAS_VALIDEZ} días — para que la campaña sea justa para todos.
 
-      date_too_early:  `Ese ticket es anterior al inicio de la campaña 📅
-*Fanáticos del Sabor* arrancó hace poco. Solo cuentan tickets desde entonces.`,
+💡 *Pro tip:* manda tu folio el mismo día de la compra. Así nunca lo pierdes.
 
-      campaign_ended: `Ya terminó *Fanáticos del Sabor* 🏁
+🎫 ¿Tienes un ticket más reciente? Mándame ese.`,
+
+      not_yet_valid:
+`La fecha del ticket todavía no llega 🤔
+
+Revisa la fecha en tu ticket — debe ser de *hoy o ayer*.
+
+💡 Si la fecha está bien y aun así da error, escribe *SOPORTE*.`,
+
+      date_too_early:
+`Ese ticket es anterior al inicio de la campaña 📅
+
+*Fanáticos del Sabor* arrancó hace poco. Solo cuentan tickets desde entonces.
+
+🎫 ¿Tienes uno más reciente? Mándame ese.`,
+
+      campaign_ended:
+`Ya terminó *Fanáticos del Sabor* 🏁
+
 La campaña concluyó. ¡Gracias por jugar! ⚽
-Mira los ganadores en *${SITE_URL}*.`,
+Mira los ganadores en ${SITE_URL}.`,
 
-      folio_too_low:   `Ese folio es de antes del inicio de la campaña 📋
-Solo se aceptan compras hechas durante *Fanáticos del Sabor*.`,
+      folio_too_low:
+`Ese folio es de antes del inicio de la campaña 📋
 
-      already_used:    `Ese folio *ya fue canjeado* 🔒
-Cada folio se usa *solo una vez*, por una sola persona.
+Solo se aceptan compras hechas durante *Fanáticos del Sabor*.
 
-⚠️ Si compartiste tu folio con alguien, esa persona pudo haberlo usado antes que tú.
-👉 Tu folio = tu llave. Nunca lo compartas, ni siquiera con amigos.
+🎫 ¿Tienes uno más reciente? Mándame ese.`,
 
-¿Tienes otro ticket? Mándame ese folio.`,
+      already_used:
+`🔒 Ese folio ya fue canjeado.
+
+Cada folio se usa una sola vez, por una sola persona.
+
+⚠️ Si lo compartiste con alguien:
+↳ Esa persona pudo haberlo usado antes que tú
+↳ Avísanos por *SOPORTE* si crees que fue robo
+
+💡 *Tu folio = tu llave personal.* Nunca lo compartas.
+
+🎫 ¿Tienes otro ticket? Mándame ese.`,
 
       ticket_limit_reached:
 `Ya jugaste tus *${RONDAS_MAX} rondas* de hoy 🏆
 Cada persona tiene *${RONDAS_MAX} rondas diarias*.
 
 🌅 Se reinician a *medianoche (hora CDMX)*.
-La hora de tu celular no importa — siempre es hora México.`,
+La hora de tu celular no importa — siempre es hora México.
 
-      // v3.21 C4: ya tiene una sesión activa sin terminar
+💡 Guarda tu folio: sigue siendo válido por ${DIAS_VALIDEZ} días.`,
+
+      // Fallback si get_link falla en handler v3.24 #1
       session_active:
-`Ya tienes un folio listo para jugar 🎮
+`Aún no terminaste tu ronda actual 🎮
 
 👉 Entra a *${SITE_URL}* con el link que te mandé y *termina los 4 minijuegos*.
 
 Cuando completes esa ronda, podrás canjear otro folio.
 
-(Si no completas en 15 minutos, el folio se libera automáticamente.)`,
+(Si no completas en 15 minutos, el folio se libera automático.)
+
+💡 ¿Perdiste el link? Mándame de nuevo el folio que ya canjeaste para reenviártelo.`,
     };
-    return msgs[error] || `No pude validar ese folio. ¿Revisas que esté completo y mándamelo de nuevo?`;
+    return msgs[error] || `No pude validar ese folio. ¿Revisas que esté completo y mándamelo de nuevo?
+
+💡 Si crees que algo no está bien, escribe *SOPORTE*.`;
   },
 
+  // ─── ERRORES TÉCNICOS ────────────────────────────────────────────────────
   errorRegistro: () =>
 `Tuve un problema técnico al registrarte 😞
 *No es culpa tuya.* Intenta de nuevo en 1-2 minutos.
 
-Si el problema persiste, escribe *AYUDA*.`,
+Si el problema persiste, escribe *SOPORTE*.`,
 
   errorEdgeFunction: () =>
 `Estamos teniendo un problema temporal 🙏
 Inténtalo en 1-2 minutos.
 
-Si sigue fallando, escribe *AYUDA*.`,
+Si sigue fallando, escribe *SOPORTE*.`,
 
-  // FIX v3.9: mensaje cuando bot está saturado (Supabase rate limit)
   servidorSaturado: () =>
 `Mucha gente está jugando ahora mismo 🔥
 Inténtalo en *30 segundos*. Tu folio no se ha perdido.
 
 (No me lo reenvíes, solo espera. Yo te respondo cuando se libere.)`,
 
+  // ─── AYUDA / COMANDOS ────────────────────────────────────────────────────
   ayuda: (u) =>
-`${u ? `Soy *Gol*, tu guía en *Fanáticos del Sabor* 👋` : "Soy *Gol*, tu guía en *Fanáticos del Sabor* 👋"}
-${u ? `Llevo el registro de *${u}*.` : ''}
+`👋 Soy *Gol*, tu bot de *Fanáticos del Sabor*${u ? ` — tu apodo es *${u}*` : ""}.
 
-🤖 *Soy un bot*, pero estoy aquí para ayudarte. Comandos:
+🤖 Soy un bot, pero estoy para ayudarte. Esto es lo que sé hacer:
 
-🎫 *Mándame un folio* — Para jugar una ronda
-📊 *PUNTOS* — Tu puntaje en el leaderboard
-🏆 *PREMIOS* — Qué puedes ganar
-🏪 *TIENDAS* — Marcas que participan
-📋 *REGLAS* — Cómo funciona
-🔍 *FOLIO* — Dónde encontrar tu folio en el ticket
+🎫 *Manda un folio* → Para jugar una ronda
+📊 *PUNTOS* → Tu posición en el leaderboard
+🏆 *PREMIOS* → Lo que puedes ganar
+🏪 *TIENDAS* → Marcas participantes
+📋 *REGLAS* → Cómo funciona todo
+🔍 *FOLIO* → Dónde está el folio en mi ticket
+🔄 *REINICIAR* → Empezar de cero
 
-⚠️ *No proceso:* fotos, audios, videos, ni stickers.`,
+⚠️ *No leo:* fotos, audios, videos, ni stickers.
 
-  puntos:  () =>
+🆘 ¿Necesitas ayuda humana? Escribe *SOPORTE* y un humano de Grupo Nutriza te contacta.`,
+
+  // ─── PUNTOS ──────────────────────────────────────────────────────────────
+  puntos: () =>
 `📊 Ve tu puntaje aquí:
 ${SITE_URL}
 
 Entra con el último link que te envié.
-(Si expiró, mándame un folio nuevo y te genero otro.)`,
+(Si expiró, mándame un folio nuevo y te genero otro.)
 
+💡 Tu posición se actualiza en tiempo real conforme juegas.`,
+
+  // ─── PREMIOS ─────────────────────────────────────────────────────────────
   premios: () =>
-`🏆 *Premios Fanáticos del Sabor*
+`🏆 *81 premios en total* — Fanáticos del Sabor
 
-🥇 *1er Lugar* — 20 ganadores
-Meet & Greet con *La Cotorrisa* 🎉
+🥇 *Top 20 del leaderboard*
+↳ Meet & Greet con *La Cotorrisa* 🎤
+↳ El evento del año
 
-🥈 *2do Lugar* — 8 ganadores
-Nintendo Switch 2 🎮
+🥈 *Top 8 siguientes*
+↳ *Nintendo Switch 2* 🎮
+↳ La consola más buscada de 2026
 
-🥉 *3er Lugar* — 13 ganadores
-LEGO Edición Especial 🧱
+🥉 *Top 13 siguientes*
+↳ *LEGO Edición Especial* 🧱
+↳ Para coleccionistas
 
-🏅 *4to Lugar* — 40 ganadores
-Merch firmado por La Cotorrisa 👕
+🏅 *Top 40 siguientes*
+↳ *Merch firmado por La Cotorrisa* 👕
+↳ Edición limitada de la campaña
 
-💪 Cada ronda suma puntos. Juega *${RONDAS_MAX} rondas diarias* para maximizar.`,
+💪 *¿Cómo subir en el ranking?*
+↳ Juega tus *${RONDAS_MAX} rondas diarias*
+↳ Mejora tu puntaje en cada juego
+↳ Acumula puntos toda la campaña
 
+🔥 La campaña termina el *${CAMPAIGN_END_DATE}*. ¡A jugar!
+
+📊 Ver mi posición → *PUNTOS*`,
+
+  // ─── TIENDAS ─────────────────────────────────────────────────────────────
   tiendas: () =>
-`🏪 *Marcas participantes:*
+`🏪 *Las 4 marcas participantes:*
 
-🥑 *Nutrisa*
-🍦 *Moyo*
-☕ *Cielito Café*
-🌮 *Chilim Balam*
+🥑 *Nutrisa* → yogurts y helados saludables
+🍦 *Moyo* → yogurt helado con toppings
+☕ *Cielito Café* → café y panadería
+🌮 *Chilim Balam* → cocina mexicana
 
-Compra en cualquiera, guarda tu ticket, y mándame el folio en *máximo ${DIAS_VALIDEZ} días*.`,
+🎫 Compra en cualquiera → guarda el ticket → mándame el folio en *${DIAS_VALIDEZ} días*.
 
-  reglas:  () =>
-`📋 *Reglas:*
+💡 Cada marca cuenta igual para tus puntos.`,
 
-🎫 *1 folio = 1 ronda* de 4 minijuegos
-🎮 Máximo *${RONDAS_MAX} rondas por día*
-📅 Ticket válido por *${DIAS_VALIDEZ} días* desde la fecha de compra
-🏆 Los puntos se acumulan toda la campaña
-🌅 Las rondas se reinician a *medianoche hora CDMX*
-🔒 Cada folio se canjea *solo una vez* — no lo compartas
-👤 Un número de WhatsApp = una cuenta`,
+  // ─── REGLAS ──────────────────────────────────────────────────────────────
+  reglas: () =>
+`📋 *Las reglas en 30 segundos:*
 
+🎫 *1 folio = 1 ronda* (4 minijuegos)
+🎮 Máximo *${RONDAS_MAX} rondas* al día
+📅 Ticket válido *${DIAS_VALIDEZ} días* desde la compra
+🏆 Puntos *se acumulan* toda la campaña
+🌅 Rondas se reinician a *medianoche CDMX*
+🔒 Cada folio *una sola vez* — no lo compartas
+👤 *Un WhatsApp = una cuenta* (no hagas trampa)
+
+📅 La campaña termina el *${CAMPAIGN_END_DATE}*.
+
+💡 ¿Algo no te queda claro? Escribe *AYUDA* o *SOPORTE*.`,
+
+  // ─── DÓNDE ESTÁ EL FOLIO ─────────────────────────────────────────────────
   dondeFolio: () =>
-`📋 *Tu folio está en la parte de arriba del ticket* 🧾
+`📋 *Cómo encontrar tu folio:*
 
-• Empieza con *84*
-• Tiene *21 dígitos*
-• Está antes de los productos
+🧾 Mira la *parte de arriba del ticket*
+🔢 Busca *21 dígitos seguidos*
+🟢 Siempre empieza con *84*
+📍 Está antes de la lista de productos
 
-⚠️ Si me mandas:
-❌ Foto del ticket → no puedo leerla
-❌ El ticket completo escrito → solo necesito los 21 dígitos
-✅ Solo los 21 números → ¡perfecto!`,
+📷 Te mandé una imagen de ejemplo arriba — fíjate en los números marcados.
 
+⚠️ *Importante:*
+↳ ❌ No me mandes la foto, no puedo leerla
+↳ ❌ No me mandes el ticket completo escrito
+↳ ✅ Solo los 21 números pegados
+
+💡 Tip iOS/Android: mantén presionado el número en tu ticket fotografiado para copiarlo.`,
+
+  // ─── GRACIAS ─────────────────────────────────────────────────────────────
   gracias: (u) =>
 `¡Con gusto${u ? `, *${u}*` : ""}! ⚽
-Cualquier duda, escribe *AYUDA*.`,
 
+💡 Si necesitas algo más, escribe *AYUDA*.`,
+
+  // ─── NO TEXTO (foto/audio/video) ─────────────────────────────────────────
   noTexto: () =>
-`No puedo leer fotos, audios ni videos 😅
-Soy un bot de texto.
+`😅 Soy un bot de texto — no leo fotos, audios ni videos.
 
-Si querías mandar tu folio:
-✅ Cópialo directo del ticket (los *21 números* que empiezan con *84*)
-✅ Pégalo en este chat
+🎫 *¿Querías mandar tu folio?*
+↳ Cópialo directo del ticket (los *21 números*)
+↳ Pégalo aquí como texto
+↳ ¿No sabes cómo? Escribe *FOLIO*
 
-Escribe *AYUDA* para ver todo lo que puedo hacer.`,
+💬 *¿Querías otra cosa?*
+↳ Escribe *AYUDA* para ver todas mis opciones
+↳ Escribe *SOPORTE* si necesitas hablar con un humano`,
 
+  // ─── PIDE FOLIO (genérico) ───────────────────────────────────────────────
   pedirFolio: () =>
 `Para continuar necesito tu *folio* 🎫
 
 📍 *Cómo encontrarlo:*
-• 21 dígitos
-• Empieza con *84*
-• Arriba del ticket
+↳ 21 dígitos
+↳ Empieza con *84*
+↳ Arriba del ticket
 
 ✅ *Cópialo y pégalo directo* — no me mandes la foto.
 
 ¿Dudas? Escribe *FOLIO* para que te explique mejor.
 ¿Necesitas otra cosa? Escribe *AYUDA*.`,
+
+  // ─── SOPORTE (v3.25 nuevos) ──────────────────────────────────────────────
+  soporteIntro: () =>
+`🆘 *Te pongo en contacto con un humano de Grupo Nutriza.*
+
+Cuéntame en una sola frase qué necesitas:
+↳ "Mi folio está dañado"
+↳ "Alguien usó mi folio"
+↳ "No me llega el link"
+↳ "Quiero reportar un problema"
+↳ Lo que sea
+
+📩 Recibimos tu mensaje y un humano te contesta en *menos de 24 horas* (lunes a viernes 9-6 CDMX).
+
+💡 Mientras tanto: si tu problema es no recibir el link, manda otro folio para generar uno nuevo.
+
+(Si cambias de opinión, escribe *cancelar*.)`,
+
+  soporteConfirmado: () =>
+`✅ *Reporte recibido.*
+
+Un humano de Grupo Nutriza revisará tu caso. Te contactamos pronto.
+
+🎫 Mientras tanto puedes seguir jugando si tienes otro folio.`,
+
+  soporteCancelado: () =>
+`Va, cancelado 👌
+
+Si cambias de opinión, escribe *SOPORTE* otra vez.
+
+¿Otra cosa que necesites? Escribe *AYUDA*.`,
 };
 
 // ─── DETECCIÓN DE INTENCIÓN ─────────────────────────────────────────────────
-function detectarIntención(texto) {
-  // ============================================================
-  // CLAUDE NOTE — Intent detection (v3.14+)
-  // ============================================================
-  // Orden importa: el regex de folio_input se chequea PRIMERO porque
-  // un folio puede tener "84" al inicio que podría confundirse con texto.
-  //
-  // "atajo_codigo" diferencia onboarding vs re-engagement:
-  //   - Landing pre-llena "Hola Gol" → intent "saludo" → saludo completo
-  //   - Hub/PlayAgain pre-llena "Ingresar código" / "Nueva ronda" →
-  //     intent "atajo_codigo" → mensaje corto sin saludo
-  //
-  // Si tocas estas keywords, considera el impacto en QR físico del ticket.
-  // ============================================================
+function detectarIntencion(texto) {
   const t = texto.toUpperCase().trim();
   const inc = (...w) => w.some(p => t.includes(p));
   const num = texto.replace(/\s/g, "");
   if (/^84\d{10,20}$/.test(num)) return "folio_input";
   if (inc("INGRESAR CÓDIGO","INGRESAR CODIGO","INGRESAR FOLIO","NUEVA RONDA","OTRA RONDA","JUGAR OTRA","NUEVO FOLIO")) return "atajo_codigo";
-  if (inc("AYUDA","HELP","OPCIONES","MENÚ","MENU")) return "ayuda";
-  if (inc("PUNT","SCORE","RANKING","COMO VOY","CÓMO VOY")) return "puntos";
-  if (inc("PREMIO","GANAR","QUÉ GANO","QUE GANO")) return "premios";
+  // v3.25: SOPORTE antes que AYUDA (porque "AYUDA HUMANA" matchea ambos)
+  if (inc("SOPORTE","AYUDA HUMANA","HABLAR CON ALGUIEN","HABLAR CON HUMANO","REPORTAR PROBLEMA","CONTACTAR HUMANO")) return "soporte";
+  if (t === "CANCELAR") return "cancelar";
+  if (inc("AYUDA","HELP","OPCIONES","MENÚ","MENU","COMANDOS")) return "ayuda";
+  if (inc("PUNT","SCORE","RANKING","COMO VOY","CÓMO VOY","MI POSICION","MI POSICIÓN")) return "puntos";
+  if (inc("PREMIO","GANAR","QUÉ GANO","QUE GANO","QUE PUEDO GANAR")) return "premios";
   if (inc("TIENDA","MARCA","NUTRISA","MOYO","CHILIM","CIELITO")) return "tiendas";
-  if (inc("REGLA","FUNCIONA","INSTRUCCIONES")) return "reglas";
+  if (inc("REGLA","FUNCIONA","INSTRUCCIONES","CÓMO JUEGO","COMO JUEGO")) return "reglas";
   if (inc("DÓNDE ESTÁ","DONDE ESTA","NO ENCUENTRO","COMO ENCUENTRO","CÓMO ENCUENTRO")) return "donde_folio";
   if (t === "FOLIO" || t === "TICKET") return "donde_folio";
-  if (inc("REINICIAR","BORRAR","RESET","EMPEZAR DE NUEVO")) return "reiniciar";
-  if (inc("GRACIAS","GRAX")) return "gracias";
-  if (inc("HOLA","BUENAS","HEY","SALUDOS","JUGAR")) return "saludo";
+  if (inc("REINICIAR","BORRAR","RESET","EMPEZAR DE NUEVO","EMPEZAR DE CERO")) return "reiniciar";
+  if (inc("GRACIAS","GRAX","THANKS")) return "gracias";
+  if (inc("HOLA","BUENAS","HEY","SALUDOS","JUGAR","QUIUBOLE","QUÉ ONDA","QUE ONDA")) return "saludo";
   return null;
 }
 
@@ -1520,41 +1535,29 @@ async function cargarSesion(tel, trace) {
   return null;
 }
 
-// ─── LÓGICA PRINCIPAL (igual que v3.7, con logging de magic link enmascarado) ─
+// v3.25: detecta días sin actividad para re-engagement
+function diasSinActividad(profile) {
+  if (!profile || !profile.wa_ultimo_mensaje_at) return 0;
+  const diff = Date.now() - new Date(profile.wa_ultimo_mensaje_at).getTime();
+  return Math.floor(diff / (1000 * 60 * 60 * 24));
+}
+
+// ─── LÓGICA PRINCIPAL ───────────────────────────────────────────────────────
 async function procesarMensajeCore(tel, texto, trace) {
-  // FIX v3.8: log entrante a Airtable (si flag activo)
   atLog(tel, texto, 'in', getSesion(tel).fase);
 
-  const intención = detectarIntención(texto);
+  const intencion = detectarIntencion(texto);
   let s = getSesion(tel);
 
   if (!s.cargado) {
     const jugador = await cargarSesion(tel, trace);
     if (jugador) {
-      // v3.22 ANTI-FRAUD: si Jonny marcó al user como bloqueado en Supabase
-      // (UPDATE profiles SET wa_bloqueado=true WHERE id=X), bot lo ignora
-      // silenciosamente. No responde. El user piensa que el bot está caído.
-      // Esto previene que el fraudulento sepa que fue detectado y abra otra cuenta.
       if (jugador.wa_bloqueado === true) {
         metrics.user_blocked = (metrics.user_blocked || 0) + 1;
         log.warn(trace, `🚫 Usuario bloqueado, ignorando: ${tel}`);
         return;
       }
 
-      // ============================================================
-      // CLAUDE NOTE — Recuperación post-reinicio del bot (v3.16)
-      // ============================================================
-      // wa_phase se persiste en DB. Pero `pendingFolio` es solo memoria.
-      // Si el bot reinicia mientras user estaba en "esperando_username",
-      // recuperamos la fase de DB pero pendingFolio sigue null.
-      //
-      // Sin este guard: el bot pediría username, user lo manda,
-      // bot intentaría hacer claim de pendingFolio=null → error confuso.
-      //
-      // FIX: si la fase recuperada es "esperando_username" pero no hay
-      // pendingFolio en memoria, degradamos a "esperando_folio" para
-      // pedir el folio de nuevo. Pérdida mínima: user vuelve a pegar folio.
-      // ============================================================
       let recoveredPhase = jugador.wa_phase || "nuevo";
       if (recoveredPhase === "esperando_username") {
         log.warn(trace, `Sesión recuperada en esperando_username sin pendingFolio — reset a esperando_folio`);
@@ -1569,6 +1572,7 @@ async function procesarMensajeCore(tel, texto, trace) {
         rondasTotal: typeof jugador.wa_rondas_total === 'number' ? jugador.wa_rondas_total : 0,
         fechaReset:  jugador.wa_fecha_reset || null,
         bloqueado:   jugador.wa_bloqueado === true,
+        diasSinJugar: diasSinActividad(jugador),
       });
     } else {
       setSesion(tel, { cargado: true, fase: "nuevo" });
@@ -1576,7 +1580,6 @@ async function procesarMensajeCore(tel, texto, trace) {
     s = getSesion(tel);
   }
 
-  // Doble check: si la sesión cacheada dice bloqueado (puede pasar si jonny lo bloqueó después del cache)
   if (s.bloqueado === true) {
     metrics.user_blocked = (metrics.user_blocked || 0) + 1;
     log.warn(trace, `🚫 Usuario bloqueado (cache), ignorando: ${tel}`);
@@ -1587,6 +1590,7 @@ async function procesarMensajeCore(tel, texto, trace) {
   const userId   = s.userId   || null;
   const hoy      = hoyMexico();
   let rondasHoy  = s.fechaReset === hoy ? (s.rondasHoy || 0) : 0;
+  const diasSinJugar = s.diasSinJugar || 0;
 
   if (s.fechaReset && s.fechaReset !== hoy && userId) {
     rondasHoy = 0;
@@ -1594,71 +1598,72 @@ async function procesarMensajeCore(tel, texto, trace) {
     sbRpc("update_wa_profile", { p_phone: tel, p_user_id: userId, p_rondas_hoy: 0, p_fecha_reset: hoy }, trace).catch(() => {});
   }
 
-  if (intención === "reiniciar") {
+  // v3.25: SOPORTE — escape hatch humano
+  if (intencion === "soporte") {
+    metrics.cmd_soporte_invoked++;
+    setSesion(tel, { fase: "esperando_soporte" });
+    return enviar(tel, M.soporteIntro(), trace);
+  }
+  if (s.fase === "esperando_soporte") {
+    if (intencion === "cancelar") {
+      setSesion(tel, { fase: username ? "activo" : "nuevo" });
+      return enviar(tel, M.soporteCancelado(), trace);
+    }
+    // Registrar ticket
+    await bcSyncSoporte(tel, username, texto, "Otro").catch(() => {});
+    setSesion(tel, { fase: username ? "activo" : "nuevo" });
+    return enviar(tel, M.soporteConfirmado(), trace);
+  }
+
+  if (intencion === "reiniciar") {
+    metrics.cmd_reiniciar_invoked++;
     setSesion(tel, { fase: username ? "activo" : "nuevo", intentos: 0, pendingFolio: null });
     return enviar(tel, username ? M.bienvenidaConocido(username, rondasHoy) : M.bienvenidaNuevo(), trace);
   }
-  if (intención === "ayuda")       return enviar(tel, M.ayuda(username), trace);
-  if (intención === "puntos")      return enviar(tel, M.puntos(), trace);
-  if (intención === "premios")     return enviar(tel, M.premios(), trace);
-  if (intención === "tiendas")     return enviar(tel, M.tiendas(), trace);
-  if (intención === "reglas")      return enviar(tel, M.reglas(), trace);
-  if (intención === "gracias")     return enviar(tel, M.gracias(username), trace);
-  if (intención === "donde_folio") {
+  if (intencion === "ayuda")       { metrics.cmd_ayuda_invoked++;   return enviar(tel, M.ayuda(username), trace); }
+  if (intencion === "puntos")      { metrics.cmd_puntos_invoked++;  return enviar(tel, M.puntos(), trace); }
+  if (intencion === "premios")     { metrics.cmd_premios_invoked++; return enviar(tel, M.premios(), trace); }
+  if (intencion === "tiendas")     { metrics.cmd_tiendas_invoked++; return enviar(tel, M.tiendas(), trace); }
+  if (intencion === "reglas")      { metrics.cmd_reglas_invoked++;  return enviar(tel, M.reglas(), trace); }
+  if (intencion === "gracias")     return enviar(tel, M.gracias(username), trace);
+  if (intencion === "donde_folio") {
+    metrics.cmd_folio_invoked++;
     await enviarImagen(tel, IMG_FOLIO, "📋 Tu folio: 21 dígitos que empiezan con 84", trace);
     return enviar(tel, M.dondeFolio(), trace);
   }
 
-  if (intención === "saludo") {
-    if (username) return enviar(tel, M.bienvenidaConocido(username, rondasHoy), trace);
+  if (intencion === "saludo") {
+    if (username) {
+      // v3.25: detectar re-engagement vs nuevo día vs normal
+      if (diasSinJugar >= DIAS_RE_ENGAGEMENT) {
+        metrics.reengagement_triggered++;
+        return enviar(tel, M.bienvenidaReEngagement(username), trace);
+      }
+      if (diasSinJugar === 1 && rondasHoy === 0) {
+        return enviar(tel, M.bienvenidaNuevoDia(username), trace);
+      }
+      return enviar(tel, M.bienvenidaConocido(username, rondasHoy), trace);
+    }
     setSesion(tel, { fase: "esperando_folio" });
     await enviarImagen(tel, IMG_FOLIO, "📋 Tu folio: 21 dígitos que empiezan con 84", trace);
     return enviar(tel, M.bienvenidaNuevo(), trace);
   }
 
-  // ============================================================
-  // CLAUDE NOTE — Atajo desde botones del website (v3.14+)
-  // ============================================================
-  // El user toca "Ingresar código" en el Hub o "Nueva ronda" en PlayAgain.
-  // Pre-llenado abre WhatsApp con un texto específico que cae aquí.
-  // Diferencia con "saludo": no repetimos el bienvenidaNuevo completo
-  // (el user ya está en flujo activo, solo quiere meter un folio).
-  // ============================================================
-  if (intención === "atajo_codigo") {
+  if (intencion === "atajo_codigo") {
     if (username) {
       setSesion(tel, { fase: "esperando_folio" });
       return enviar(tel, M.atajoConocido(username, rondasHoy), trace);
     }
-    // Edge case: user no registrado toca atajo sin haber pasado onboarding.
-    // Trátalo como saludo normal (no rompemos el flujo).
     setSesion(tel, { fase: "esperando_folio" });
     await enviarImagen(tel, IMG_FOLIO, "📋 Tu folio: 21 dígitos que empiezan con 84", trace);
     return enviar(tel, M.bienvenidaNuevo(), trace);
   }
 
   if (s.fase === "esperando_username") {
-    // ============================================================
-    // CLAUDE NOTE — Folio durante esperando_username (v3.16)
-    // ============================================================
-    // Edge case: user manda folio MIENTRAS bot espera username.
-    // Causas comunes:
-    //   - User no leyó "elige tu username" y pegó otro folio
-    //   - Cambió de opinión sobre cuál folio usar
-    //   - Out-of-order delivery de Meta (folio retrasado llegó después)
-    //
-    // Sin este guard, los primeros 20 dígitos del folio se tratarían
-    // como username candidato, validarUsername() rechazaría, y el
-    // pendingFolio original se perdería en una recuperación incierta.
-    //
-    // Solución: detectamos `intención === "folio_input"` PRIMERO,
-    // recordamos al user que aún esperamos username del folio anterior.
-    // Eso le da la opción de mandar username, o usar /reiniciar para
-    // empezar de cero con el folio nuevo.
-    // ============================================================
-    if (intención === "folio_input") {
+    if (intencion === "folio_input") {
       log.info(trace, `Folio recibido en esperando_username — pidiendo username del folio anterior`);
       return enviar(tel,
-        `Antes mándame *un nombre de usuario* para tu folio anterior 👤\n\n` +
+        `Antes mándame *un apodo* para tu folio anterior 👤\n\n` +
         `O escribe *reiniciar* si prefieres empezar con este folio nuevo.`,
         trace
       );
@@ -1672,15 +1677,11 @@ async function procesarMensajeCore(tel, texto, trace) {
     const regRes = await waAuth("register", { phone: tel, username: nombrePropuesto }, trace);
 
     if (regRes?.error === "username_taken") return enviar(tel, M.usernameTomado(generarSugerencia(nombrePropuesto)), trace);
-    // FIX v3.13: Edge Function v5 rechaza profanity contra tabla profanity_words (2,191 palabras).
-    // Single source of truth = mismo blocklist que el website RegisterPage.
     if (regRes?.error === "inappropriate_username") {
       metrics.username_rejected_profanity++;
       log.info(trace, `Username rechazado por profanity: "${nombrePropuesto}"`);
-      return enviar(tel, M.usernameInvalido(
-        "ese nombre no se permite en la campaña.",
-        null
-      ), trace);
+      // v3.25: usa M.usernameProfanity con sugerencia + escape a SOPORTE
+      return enviar(tel, M.usernameProfanity(generarSugerencia(nombrePropuesto)), trace);
     }
     if (regRes?.error === "unauthorized") {
       log.error(trace, "Edge Function rechaza auth — WA_BOT_SECRET no seteado");
@@ -1707,8 +1708,6 @@ async function procesarMensajeCore(tel, texto, trace) {
       return enviar(tel, `Hubo un problema. Mándame tu folio de nuevo 🎫`, trace);
     }
 
-    // v3.21 C3: usar validate_and_claim_ticket directamente. wa_claim_ticket era wrapper sin propósito.
-    // v3.21 C4: validate_and_claim_ticket ya NO incrementa wa_rondas_hoy (eso pasa cuando completa 4 juegos).
     const claimRes = await sbRpc("validate_and_claim_ticket", {
       p_code: pendFolio, p_user_id: newUserId,
     }, trace);
@@ -1721,10 +1720,6 @@ async function procesarMensajeCore(tel, texto, trace) {
     }
     metrics.claim_ok++;
 
-    // v3.22 C4 FIX: separar SEMÁNTICAS:
-    //   - completedToday = rondas COMPLETADAS hoy (para session.rondasHoy, M.bienvenidaConocido, etc)
-    //   - rondaNum = la ronda que VA A jugar AHORA (para "Vas en la ronda X de 5")
-    //   - rondaNum = completedToday + 1
     let completedToday = 0;
     let totalCompleted = 0;
     const postProfile = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
@@ -1732,27 +1727,16 @@ async function procesarMensajeCore(tel, texto, trace) {
       completedToday = (postProfile.wa_fecha_reset === hoy ? postProfile.wa_rondas_hoy : 0) || 0;
       totalCompleted = postProfile.wa_rondas_total || 0;
     }
-    const rondaNum = completedToday + 1;  // ronda que jugará ahora
-    const totalNum = totalCompleted + 1;
+    const rondaNum = completedToday + 1;
 
     setSesion(tel, {
       fase: "activo", username: finalUsername, userId: newUserId,
-      // IMPORTANTE: rondasHoy en session = completadas (NO la que va a jugar)
-      // para que M.bienvenidaConocido muestre correctamente "Hoy llevas X/5 rondas jugadas"
       rondasHoy: completedToday, rondasTotal: totalCompleted, fechaReset: hoy,
       pendingFolio: null, intentos: 0,
     });
 
-    // v3.22: TODO se va a Bot Control. Engine v2 deprecado.
-    const ahora = new Date().toISOString();
-    // v3.20: sync enriquecido con marca/tienda/estado del primer folio
     const storeInfoFirst = getStoreFromFolio(pendFolio);
 
-    // v3.22: registrar canje en tabla Canjes (Bot Control)
-    // rondaNum es post-claim, pero como C4 cambió la lógica, en realidad
-    // representa "intento de canje" más que "ronda completada".
-    // Mostramos rondaNum=postProfile.wa_rondas_hoy+1 para que sea legible
-    // (qué ronda VA a contar cuando complete los 4 juegos).
     bcSyncCanje(pendFolio, tel, finalUsername, storeInfoFirst, rondaNum, null).catch(() => {});
 
     bcSyncUsuario(tel, "activo", storeInfoFirst, {
@@ -1760,7 +1744,6 @@ async function procesarMensajeCore(tel, texto, trace) {
       primerContacto: true,
     }).catch(() => {});
 
-    // Captura IP async (espera 30s a que el user dé click al magic link, luego sync)
     setTimeout(async () => {
       const ip = await getUserLastIP(tel);
       if (ip) {
@@ -1778,7 +1761,7 @@ async function procesarMensajeCore(tel, texto, trace) {
   }
 
   const looksLikeFolio = /^\d{10,}$/.test(texto.replace(/\s/g, ""));
-  if (intención === "folio_input" || (s.fase === "esperando_folio" && looksLikeFolio)) {
+  if (intencion === "folio_input" || (s.fase === "esperando_folio" && looksLikeFolio)) {
     const num = texto.replace(/\s/g, "");
     const localVal = validarFormatoFolioLocal(num);
     if (!localVal.ok) {
@@ -1789,7 +1772,6 @@ async function procesarMensajeCore(tel, texto, trace) {
     const previewParams = userId ? { p_code: folio, p_user_id: userId } : { p_code: folio };
     const preview = await sbRpc("preview_ticket", previewParams, trace);
 
-    // FIX v3.10: si preview es null (no es {success:false}), Supabase saturado
     if (preview === null) {
       log.warn(trace, "preview_ticket null — Supabase posiblemente saturado");
       return enviar(tel, M.servidorSaturado(), trace);
@@ -1802,19 +1784,6 @@ async function procesarMensajeCore(tel, texto, trace) {
     metrics.preview_ticket_ok++;
 
     if (username && userId) {
-      // ============================================================
-      // CLAUDE NOTE — Sync web ↔ WhatsApp antes de claim (v3.12+)
-      // ============================================================
-      // User puede agregar folios desde el website entre mensajes WA.
-      // validate_and_claim_ticket sincroniza wa_rondas_hoy en DB (v3.12),
-      // pero la sesión local del bot tiene cache de 24h.
-      //
-      // Sin este refresh: mostraríamos rondas viejas Y mandaríamos un
-      // newTotal incorrecto al claim, sobreescribiendo con valor menor.
-      //
-      // FIX v3.16: sincronizamos AMBOS rondasHoy Y rondasTotal desde DB,
-      // no solo rondasHoy. La variable local `s.rondasTotal` quedaba stale.
-      // ============================================================
       let localRondasTotal = s.rondasTotal || 0;
       const freshProfile = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
       if (freshProfile?.found) {
@@ -1823,8 +1792,6 @@ async function procesarMensajeCore(tel, texto, trace) {
           : 0;
         const dbRondasTotal = freshProfile.wa_rondas_total || 0;
 
-        // Sincronización defensiva: DB siempre gana si tiene valores más altos
-        // (el web pudo haber adelantado al bot).
         if (dbRondasHoy > rondasHoy || dbRondasTotal > localRondasTotal) {
           log.info(trace, `Sync: rondasHoy ${rondasHoy}→${dbRondasHoy}, rondasTotal ${localRondasTotal}→${dbRondasTotal}`);
           rondasHoy = Math.max(rondasHoy, dbRondasHoy);
@@ -1835,32 +1802,29 @@ async function procesarMensajeCore(tel, texto, trace) {
 
       if (rondasHoy >= RONDAS_MAX) return enviar(tel, M.maxRondas(username), trace);
 
-      // ============================================================
-      // ============================================================
-      // CLAUDE NOTE — Atomic counter handling (v3.21)
-      // ============================================================
-      // v3.21 C4: validate_and_claim_ticket YA NO incrementa wa_rondas_hoy
-      // al canjear. Solo setea current_ticket_code. El incremento ocurre
-      // cuando submit_game_score detecta 4 minijuegos completados.
-      //
-      // El bot post-claim NO debería mostrar "ronda X/5" todavía, porque
-      // el user aún no ha jugado. Mostramos "ya tienes folio activo, ve a jugar".
-      //
-      // C3: wa_claim_ticket era wrapper sin propósito, eliminado.
-      // ============================================================
       const claimRes = await sbRpc("validate_and_claim_ticket", {
         p_code: folio, p_user_id: userId,
       }, trace);
 
       if (!claimRes?.success) {
         metrics.claim_fail++;
+
+        // FIX v3.24 #1 — Sesión activa: regenerar magic link
+        if (claimRes?.error === 'session_active') {
+          log.info(trace, `session_active detectado — regenerando magic link`);
+          const linkRes = await waAuth("get_link", { phone: tel }, trace);
+          if (linkRes?.magic_link) {
+            metrics.session_active_relinks++;
+            log.info(trace, `Re-enviando magic link: ${maskLink(linkRes.magic_link)}`);
+            return enviar(tel, M.reenvioLink(username, linkRes.magic_link), trace);
+          }
+          log.warn(trace, `session_active sin link — fallback a mensaje de texto`);
+        }
+
         return enviar(tel, M.folioError(claimRes?.error || "already_used"), trace);
       }
       metrics.claim_ok++;
 
-      // v3.22 C4: separar SEMÁNTICAS:
-      //   - completedToday = rondas completadas hoy (para session)
-      //   - rondaParaMostrar = la ronda que va a jugar ahora (para mensaje)
       let completedToday = rondasHoy;
       let totalCompleted = localRondasTotal;
       const postProfile = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
@@ -1869,10 +1833,8 @@ async function procesarMensajeCore(tel, texto, trace) {
         totalCompleted = postProfile.wa_rondas_total || 0;
       }
       const rondaParaMostrar = completedToday + 1;
-      // session.rondasHoy = completadas (consistente con M.bienvenidaConocido)
       setSesion(tel, { rondasHoy: completedToday, rondasTotal: totalCompleted, intentos: 0 });
 
-      // v3.22: sync canje a Bot Control (Engine v2 deprecated)
       const storeInfoReclaim = getStoreFromFolio(folio);
       bcSyncCanje(folio, tel, username, storeInfoReclaim, rondaParaMostrar, null).catch(() => {});
 
@@ -1919,11 +1881,7 @@ async function procesarBroadcasts() {
   broadcastRunning = true;
   metrics.broadcast_runs++;
   try {
-    // Checar AMBAS bases: Engine v2 y Bot Control
-    // Jonny maneja broadcasts desde Bot Control ("🤖 Gol Nutriza — Bot Control")
-    // Engine v2 se mantiene como fallback/legacy
     const sources = [
-      // [urlBroadcastList, fnMarkEnviando, fnMarkDone]
       {
         listUrl: airtableUrl(AT_TABLES.BROADCASTS, {
           filterByFormula: `{${FB.EST}}="Listo para enviar"`,
@@ -1942,7 +1900,6 @@ async function procesarBroadcasts() {
         }),
       },
       {
-        // Bot Control broadcasts — donde Jonny los gestiona
         listUrl: bcUrl(BC_BROADCASTS, {
           filterByFormula: `{${BCB.EST}}="Listo para enviar"`,
           returnFieldsByFieldId: "true",
@@ -2052,7 +2009,7 @@ function cleanupMaps() {
   }
 }
 
-// ─── WEBHOOK CON HMAC VALIDATION (FIX v3.8) ─────────────────────────────────
+// ─── WEBHOOK ────────────────────────────────────────────────────────────────
 app.get("/webhook", (req, res) => {
   const { "hub.mode": m, "hub.verify_token": t, "hub.challenge": c } = req.query;
   if (m === "subscribe" && t === VERIFY_TOKEN) {
@@ -2064,7 +2021,6 @@ app.get("/webhook", (req, res) => {
 });
 
 app.post("/webhook", async (req, res) => {
-  // FIX v3.8 #1: IP rate limit
   const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip || 'unknown';
   if (!checkIpRate(ip)) {
     metrics.webhook_ip_blocked++;
@@ -2072,7 +2028,6 @@ app.post("/webhook", async (req, res) => {
     return res.status(429).send('rate limited');
   }
 
-  // FIX v3.8 #2: HMAC validation
   const sig = verifyMetaSignature(req);
   if (!sig.valid) {
     metrics.webhook_invalid_hmac++;
@@ -2114,21 +2069,6 @@ app.post("/webhook", async (req, res) => {
           continue;
         }
 
-        // ============================================================
-        // CLAUDE NOTE — Phone normalization (v3.16)
-        // ============================================================
-        // Meta normalmente manda E.164 sin '+', ej "5215512345678".
-        // Pero defendámonos contra +, espacios, guiones, paréntesis
-        // por si Meta cambia formato o por si es un mock/test.
-        //
-        // El Edge Function wa-auth normaliza igual con replace(/\D/g, '').
-        // Mantener consistencia EVITA dedup roto: el mismo user con dos
-        // formatos diferentes crearía dos sesiones, dos userLocks,
-        // dos profiles. Catástrofe silenciosa.
-        //
-        // Validamos longitud mínima 10 dígitos (números mexicanos
-        // tienen 10 sin lada país, 12-13 con). Algo menos = mock o bug.
-        // ============================================================
         const tel = String(msg.from || "").replace(/\D/g, "");
         if (!tel || tel.length < 10) {
           metrics.webhook_invalid_phone++;
@@ -2154,6 +2094,174 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// FIX v3.24 #2 — Endpoint /game-complete (cierra el loop)
+// v3.25: ahora incluye puntos acumulados en el mensaje
+// ════════════════════════════════════════════════════════════════════════════
+app.post("/game-complete", async (req, res) => {
+  const trace = newTrace();
+  metrics.game_complete_received++;
+
+  const { phone, score, secret, ronda_num } = req.body || {};
+
+  if (!secret || secret !== BOT_SECRET) {
+    metrics.game_complete_unauth++;
+    log.warn(trace, `game-complete: unauthorized from ${req.ip}`);
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  if (!phone || score == null) {
+    log.warn(trace, `game-complete: missing fields`);
+    return res.status(400).json({ error: "missing_fields" });
+  }
+
+  const tel = String(phone).replace(/\D/g, "");
+  if (tel.length < 10) {
+    log.warn(trace, `game-complete: phone inválido "${phone}"`);
+    return res.status(400).json({ error: "invalid_phone" });
+  }
+
+  const scoreNum = parseInt(score, 10);
+  if (isNaN(scoreNum) || scoreNum < 0) {
+    log.warn(trace, `game-complete: score inválido "${score}"`);
+    return res.status(400).json({ error: "invalid_score" });
+  }
+
+  res.json({ ok: true });
+
+  (async () => {
+    try {
+      log.info(trace, `🎮 game-complete: tel=${tel} score=${scoreNum} ronda_num=${ronda_num || '?'}`);
+
+      const profile = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
+      if (!profile?.found) {
+        log.warn(trace, `game-complete: profile not found ${tel}`);
+        metrics.game_complete_failed++;
+        return;
+      }
+
+      const username      = profile.wa_username || profile.username || 'Fanático';
+      const hoy           = hoyMexico();
+      const rondasHoy     = profile.wa_fecha_reset === hoy ? (profile.wa_rondas_hoy || 0) : 0;
+      const puntosTotal   = profile.wa_puntos_total || 0;
+
+      setSesion(tel, {
+        username,
+        userId: profile.user_id,
+        rondasHoy,
+        rondasTotal: profile.wa_rondas_total || 0,
+        fechaReset: hoy,
+        fase: "activo",
+      });
+
+      // v3.25: pasar puntosTotal al mensaje para mostrar acumulado
+      const msg = rondasHoy >= RONDAS_MAX
+        ? M.rondaCompletadaMaxDia(username, scoreNum, puntosTotal)
+        : M.rondaCompletada(username, scoreNum, rondasHoy, puntosTotal);
+
+      await enviar(tel, msg, trace);
+      log.info(trace, `🎉 game-complete WA sent: rondas=${rondasHoy}/${RONDAS_MAX}, score=${scoreNum}, total=${puntosTotal}`);
+    } catch (e) {
+      metrics.game_complete_failed++;
+      recordError("game-complete:process", e);
+      log.error(trace, `game-complete process error: ${e.message}`);
+    }
+  })();
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// v3.25 — ENDPOINTS ADMIN PARA AIRTABLE
+// ════════════════════════════════════════════════════════════════════════════
+
+// POST /send-direct
+// Jonny manda mensaje custom a un usuario desde Airtable.
+// Body: { phone, message, secret }
+app.post("/send-direct", async (req, res) => {
+  const trace = newTrace();
+  metrics.admin_send_direct_received++;
+
+  const { phone, message, secret } = req.body || {};
+
+  if (!secret || secret !== BOT_SECRET) {
+    metrics.admin_send_direct_unauth++;
+    log.warn(trace, `send-direct: unauthorized from ${req.ip}`);
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  if (!phone || !message) {
+    return res.status(400).json({ error: "missing_fields" });
+  }
+
+  const tel = String(phone).replace(/\D/g, "");
+  if (tel.length < 10) {
+    return res.status(400).json({ error: "invalid_phone" });
+  }
+
+  const msg = String(message).substring(0, 1500); // límite de WA template
+  res.json({ ok: true });
+
+  (async () => {
+    try {
+      log.info(trace, `📩 admin send-direct: ${tel} ← "${msg.substring(0, 50)}..."`);
+      await enviar(tel, msg, trace);
+    } catch (e) {
+      recordError("send-direct:process", e);
+      log.error(trace, `send-direct error: ${e.message}`);
+    }
+  })();
+});
+
+// POST /admin-broadcast-trigger
+// Fuerza procesamiento inmediato de la cola de broadcasts (no espera el cron de 30s)
+app.post("/admin-broadcast-trigger", async (req, res) => {
+  const trace = newTrace();
+  const { secret } = req.body || {};
+
+  if (!secret || secret !== BOT_SECRET) {
+    log.warn(trace, `broadcast-trigger: unauthorized from ${req.ip}`);
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  metrics.admin_broadcast_triggered++;
+  res.json({ ok: true });
+
+  procesarBroadcasts().catch(e => {
+    log.error(trace, `broadcast-trigger error: ${e.message}`);
+  });
+});
+
+// GET /admin-health-summary
+// Resumen compacto del estado del bot para Airtable Dashboard.
+// Pasar secret como query param o header (no es endpoint super sensible).
+app.get("/admin-health-summary", async (req, res) => {
+  const secret = req.query.secret || req.headers['x-bot-secret'];
+  if (!secret || secret !== BOT_SECRET) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  res.json({
+    version:           VERSION,
+    uptime_sec:        Math.floor((Date.now() - bootTime) / 1000),
+    hoy_mx:            hoyMexico(),
+    sesiones_activas:  sesiones.size,
+    stores_loaded:     storesCache.size,
+    stores_ready:      storesCacheReady,
+    webhook_total:     metrics.webhook_total,
+    msg_processed:     metrics.msg_processed,
+    claim_ok:          metrics.claim_ok,
+    claim_fail:        metrics.claim_fail,
+    send_ok:           metrics.send_ok,
+    send_fail:         metrics.send_fail,
+    soporte_tickets:   metrics.soporte_tickets_created,
+    rpc_errors:        metrics.rpc_errors,
+    circuit_open:      atCircuitOpen,
+    limiter_running:   SB_LIMITER.running,
+    limiter_queue:     SB_LIMITER.queue.length,
+    last_error:        metrics.last_error,
+    last_error_at:     metrics.last_error_at,
+  });
+});
+
 // ─── ENDPOINTS DE MONITORING ────────────────────────────────────────────────
 app.get("/", (_req, res) => res.json({
   status:       "ok",
@@ -2164,32 +2272,15 @@ app.get("/", (_req, res) => res.json({
   stores_ready: storesCacheReady,
 }));
 
-// ─── HEALTH ENDPOINTS — un check por cada órgano del pipeline ────────────────
-// FIX v3.13: /health ahora chequea cada componente independientemente.
-// Si algo se rompe, sabemos EXACTAMENTE qué órgano falló.
-// Esto facilita debugging cuando estás en panico bajo carga real.
-//
-// Componentes verificados:
-//   1. Bot Railway (siempre OK si responde)
-//   2. Supabase RPC (today_mx)
-//   3. Supabase RLS-bypass (wa_broadcast_recipients accesible)
-//   4. Supabase profanity (is_profane funciona)
-//   5. Stores cache (cargada)
-//   6. Edge Function wa-auth (responde)
-//   7. Airtable Broadcasts (accesible)
-//   8. WhatsApp/Meta token (válido)
-//   9. Limiter Supabase (no saturado)
 app.get("/health", async (_req, res) => {
   const checks = {};
   let allOk = true;
 
-  // 1. Stores cache
   checks.stores_cache = storesCacheReady
     ? { status: "ok", count: storesCache.size }
     : { status: "warming", count: 0 };
   if (!storesCacheReady) allOk = false;
 
-  // 2. Supabase today_mx
   const t0 = Date.now();
   const today = await sbRpc("today_mx", {});
   checks.supabase_rpc = today
@@ -2197,7 +2288,6 @@ app.get("/health", async (_req, res) => {
     : { status: "down" };
   if (!today) allOk = false;
 
-  // 3. Supabase wa_broadcast_recipients (verifica RLS bypass)
   const t1 = Date.now();
   const recipients = await sbRpcArray("wa_broadcast_recipients", {});
   checks.supabase_broadcast_rpc = Array.isArray(recipients)
@@ -2205,7 +2295,6 @@ app.get("/health", async (_req, res) => {
     : { status: "down" };
   if (!Array.isArray(recipients)) allOk = false;
 
-  // 4. Supabase is_profane (verifica profanity sync)
   const t2 = Date.now();
   const profCheck = await sbRpc("is_profane", { p_input: "chingar" });
   checks.supabase_profanity = (profCheck === true)
@@ -2213,12 +2302,8 @@ app.get("/health", async (_req, res) => {
     : { status: profCheck === null ? "down" : "wrong_result" };
   if (profCheck !== true) allOk = false;
 
-  // 5. Edge Function wa-auth (echo ping)
   const t3 = Date.now();
   const efPing = await waAuth("ping", {});
-  // EF responde 400 unknown_action a "ping" → significa que está VIVA.
-  // Si responde unauthorized → secret roto.
-  // Si responde misconfigured → falta env var en Supabase.
   checks.edge_function = efPing
     ? { status: efPing.error === "unauthorized" ? "auth_broken"
               : efPing.error === "misconfigured" ? "env_missing"
@@ -2227,7 +2312,6 @@ app.get("/health", async (_req, res) => {
     : { status: "down" };
   if (!efPing || ["auth_broken","env_missing","down"].includes(checks.edge_function.status)) allOk = false;
 
-  // 6. Airtable Broadcasts table (verifica que el bot puede leer)
   if (AIRTABLE_TOKEN) {
     const t4 = Date.now();
     try {
@@ -2245,7 +2329,6 @@ app.get("/health", async (_req, res) => {
     checks.airtable = { status: "no_token" };
   }
 
-  // 7. Supabase limiter (saturación)
   const limiterUsage = (SB_LIMITER.running / SB_LIMITER.maxConcurrent * 100).toFixed(0);
   const queueUsage = (SB_LIMITER.queue.length / SB_LIMITER.maxQueue * 100).toFixed(0);
   checks.supabase_limiter = {
@@ -2256,7 +2339,6 @@ app.get("/health", async (_req, res) => {
     queue_pct: queueUsage,
   };
 
-  // 8. Sessions / userlocks memory
   checks.memory = {
     sesiones: sesiones.size,
     userlocks: userLocks.size,
@@ -2264,7 +2346,6 @@ app.get("/health", async (_req, res) => {
     rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
   };
 
-  // 9. Circuit breaker
   checks.airtable_circuit = atCircuitOpen
     ? { status: "open", since: atCircuitOpenedAt }
     : { status: "closed" };
@@ -2283,7 +2364,6 @@ app.get("/ready", (_req, res) => {
   res.status(storesCacheReady ? 200 : 503).send(storesCacheReady ? "OK" : "warming up");
 });
 
-// FIX v3.8: /metrics auth opcional
 app.get("/metrics", (req, res) => {
   if (METRICS_SECRET) {
     const auth = req.headers.authorization || '';
@@ -2325,9 +2405,8 @@ function validarEnvVars() {
     return false;
   }
   log.info(null, `✅ Env vars OK`);
-  // Warn si seguridad opcional no activada
   if (!META_APP_SECRET) {
-    log.warn(null, `⚠️ META_APP_SECRET no set — webhooks SIN validación HMAC (compatible con v3.7 pero menos seguro)`);
+    log.warn(null, `⚠️ META_APP_SECRET no set — webhooks SIN validación HMAC`);
   } else {
     log.info(null, `🔐 META_APP_SECRET activo — webhooks validados con HMAC`);
   }
@@ -2336,11 +2415,16 @@ function validarEnvVars() {
   } else {
     log.info(null, `🔐 METRICS_SECRET activo — /metrics requiere bearer`);
   }
+  if (!BC_SOPORTE) {
+    log.warn(null, `⚠️ BC_SOPORTE_TABLE_ID no set — comando SOPORTE funcionará pero no sincronizará a Airtable`);
+  } else {
+    log.info(null, `🆘 BC_SOPORTE activo: ${BC_SOPORTE}`);
+  }
   return true;
 }
 
 async function selfCheck() {
-  log.info(null, "🔍 Self-check...");
+  log.info(null, "🔍 Self-check…");
   const checks = { supabase_rpc: false, edge_function: false, airtable: false };
   const sb = await sbRpc("today_mx", {});
   checks.supabase_rpc = sb !== null;
@@ -2385,10 +2469,8 @@ async function start() {
   setInterval(refreshStoresCache, 60 * 60 * 1000);
   setInterval(procesarBroadcasts, 30 * 1000);
   setInterval(cleanupMaps,        CLEANUP_INTERVAL_MS);
-  setInterval(atFlush,            AT_QUEUE_FLUSH_MS);  // FIX v3.8
+  setInterval(atFlush,            AT_QUEUE_FLUSH_MS);
 
-  // v3.21 C5: cron cleanup sesiones atoradas cada 5 min
-  // Libera sesiones >15 min sin completar: borra redemption + libera current_ticket_code
   setInterval(async () => {
     try {
       const res = await sbRpc("bot_cleanup_sessions", {}, null);
@@ -2400,13 +2482,9 @@ async function start() {
     }
   }, 5 * 60 * 1000);
 
-  // v3.20: cron diario para snapshot del Leaderboard a las 8 PM hora MX
-  // Chequea cada 5 minutos. Si la hora MX es 20:00-20:04, ejecuta una vez.
-  // Usa flag en memoria para no duplicar en la misma ventana.
   let lastSnapshotDate = null;
   setInterval(() => {
     const now = new Date();
-    // Convertir a hora MX (CDMX = UTC-6, ajustable; horario verano UTC-5)
     const mxNow = new Date(now.toLocaleString("en-US", { timeZone: "America/Mexico_City" }));
     const hh = mxNow.getHours();
     const today = mxNow.toISOString().substring(0, 10);
@@ -2415,7 +2493,7 @@ async function start() {
       log.info(null, `📊 Triggering daily leaderboard snapshot for ${today}`);
       runLeaderboardSnapshot().catch(e => log.error(null, "Leaderboard snapshot ERR:", e.message));
     }
-  }, 5 * 60 * 1000);  // check every 5 min
+  }, 5 * 60 * 1000);
 
   procesarBroadcasts().catch(() => {});
 }
