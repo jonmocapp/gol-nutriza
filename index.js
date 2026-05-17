@@ -1,11 +1,20 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRIZA — BOT v3.25 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRIZA — BOT v3.26 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutriza · WhatsApp-native                       ║
 // ║                                                                              ║
-// ║  v3.25: UX rewrite completo + endpoints admin para Airtable                  ║
+// ║  v3.26: Bot más amigable que guía cuando el sitio falla                      ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 //
-// ─── NUEVO EN v3.25 (17 may 2026) ───────────────────────────────────────────
+// ─── NUEVO EN v3.26 (17 may 2026 PM) ────────────────────────────────────────
+// Mientras se arreglan los bugs del sitio web (Mohammad), el bot ahora:
+// • Mensaje del magic link incluye tips para los bugs visuales del sitio
+// • Mensaje post-canje avisa que el puntaje aparece en 2-3 min
+// • Nuevo comando SITIO → guía paso a paso para problemas comunes
+// • Comando PUNTOS dispara auto_sync_all_orphans (fuerza el ranking)
+// • Comando AYUDA actualizado con SITIO y mejor empatía
+// • Si el usuario reporta error, sugerencias específicas y SOPORTE
+//
+// ─── HEREDADO DE v3.25 (17 may 2026) ────────────────────────────────────────
 // UX REWRITE: cada mensaje rediseñado con personalidad mexicana, ejemplos
 //   concretos, footers de discoverability, y micro-celebraciones. 22 mensajes
 //   refinados. Footer rotativo invita a descubrir comandos (PREMIOS, PUNTOS,
@@ -68,7 +77,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.25";
+const VERSION         = "3.26";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -298,6 +307,7 @@ const metrics = {
   cmd_folio_invoked:        0,
   cmd_reiniciar_invoked:    0,
   cmd_soporte_invoked:      0,
+  cmd_sitio_invoked:        0,
   soporte_tickets_created:  0,
   reengagement_triggered:   0,
   // v3.25: admin endpoints
@@ -1117,7 +1127,9 @@ ${magicLink}
 
 🎯 Vas en la *ronda ${rondasHoy} de ${RONDAS_MAX}* del día.
 
-💡 Después de jugar te aviso por aquí. ¿Listo? Toca el link ⬆️`,
+💡 *Si el sitio te muestra algo raro* (juegos ya jugados, pantalla de login con email), escribe *SITIO* aquí y te ayudo a arreglarlo.
+
+¿Listo? Toca el link ⬆️`,
 
   // ─── FOLIO ADICIONAL (RONDAS 2+) ─────────────────────────────────────────
   folioAdicional: (username, rondaNum, magicLink) =>
@@ -1132,7 +1144,7 @@ ${rondaNum < RONDAS_MAX
   ? `💪 Te quedan *${RONDAS_MAX - rondaNum} rondas* hoy. ¡A ganar puntos!`
   : `🔥 ¡Última ronda de hoy! Mañana a medianoche CDMX se reinician.`}
 
-💡 Tip: cada ronda puede subir tu posición en el leaderboard. Revisa con *PUNTOS*`,
+💡 *¿El sitio te muestra los juegos como ya jugados o te lleva a un login?* Escribe *SITIO* y te paso el truco para arreglarlo.`,
 
   // ─── RE-ENVÍO DE MAGIC LINK (FIX v3.24 #1) ───────────────────────────────
   reenvioLink: (username, magicLink) =>
@@ -1348,6 +1360,7 @@ Inténtalo en *30 segundos*. Tu folio no se ha perdido.
 🏪 *TIENDAS* → Marcas participantes
 📋 *REGLAS* → Cómo funciona todo
 🔍 *FOLIO* → Dónde está el folio en mi ticket
+🌐 *SITIO* → ¿Problemas con la página web?
 🔄 *REINICIAR* → Empezar de cero
 
 ⚠️ *No leo:* fotos, audios, videos, ni stickers.
@@ -1362,7 +1375,7 @@ ${SITE_URL}
 Entra con el último link que te envié.
 (Si expiró, mándame un folio nuevo y te genero otro.)
 
-💡 Tu posición se actualiza en tiempo real conforme juegas.`,
+💡 Tu posición se actualiza en *2-3 minutos* después de cerrar cada ronda. Si acabas de terminar de jugar, dale un poco de tiempo.`,
 
   // ─── PREMIOS ─────────────────────────────────────────────────────────────
   premios: () =>
@@ -1503,6 +1516,34 @@ Un humano de Grupo Nutriza revisará tu caso. Te contactamos pronto.
 Si cambias de opinión, escribe *SOPORTE* otra vez.
 
 ¿Otra cosa que necesites? Escribe *AYUDA*.`,
+
+  // ─── SITIO (v3.26 nuevo) — guía para bugs comunes del sitio ──────────────
+  sitio: () =>
+`🌐 *¿Problemas con el sitio?*
+
+Estos son los más comunes y cómo arreglarlos:
+
+1️⃣ *Ves los juegos como ya jugados*
+↳ Recarga la página (jala de arriba abajo)
+↳ O cierra la pestaña y vuelve a tap al link
+
+2️⃣ *Pantalla de login con email/contraseña*
+↳ Ignora ese login (no jala)
+↳ Escribe *REINICIAR* aquí y te mando otro link limpio
+
+3️⃣ *Los juegos no responden al tocar*
+↳ Recarga la página
+↳ Si sigue igual, escribe *SOPORTE*
+
+4️⃣ *Tu puntaje no aparece en el ranking*
+↳ Espera *2-3 minutos* tras terminar la ronda
+↳ Refresca el ranking
+
+5️⃣ *"Volver al inicio" no jala bien*
+↳ Vuelve a WhatsApp aquí
+↳ Escribe *REINICIAR* para empezar limpio
+
+💡 ¿Sigue fallando? Escribe *SOPORTE* y un humano te ayuda.`,
 };
 
 // ─── DETECCIÓN DE INTENCIÓN ─────────────────────────────────────────────────
@@ -1514,6 +1555,8 @@ function detectarIntencion(texto) {
   if (inc("INGRESAR CÓDIGO","INGRESAR CODIGO","INGRESAR FOLIO","NUEVA RONDA","OTRA RONDA","JUGAR OTRA","NUEVO FOLIO")) return "atajo_codigo";
   // v3.25: SOPORTE antes que AYUDA (porque "AYUDA HUMANA" matchea ambos)
   if (inc("SOPORTE","AYUDA HUMANA","HABLAR CON ALGUIEN","HABLAR CON HUMANO","REPORTAR PROBLEMA","CONTACTAR HUMANO")) return "soporte";
+  // v3.26: SITIO — guía para bugs del sitio
+  if (inc("SITIO","WEB","PAGINA","PÁGINA","ERROR SITIO","NO JALA","NO FUNCIONA","BUG","NO ME DEJA","SE TRABO","SE TRABÓ","ATORADO","ATORADA")) return "sitio";
   if (t === "CANCELAR") return "cancelar";
   if (inc("AYUDA","HELP","OPCIONES","MENÚ","MENU","COMANDOS")) return "ayuda";
   if (inc("PUNT","SCORE","RANKING","COMO VOY","CÓMO VOY","MI POSICION","MI POSICIÓN")) return "puntos";
@@ -1621,7 +1664,15 @@ async function procesarMensajeCore(tel, texto, trace) {
     return enviar(tel, username ? M.bienvenidaConocido(username, rondasHoy) : M.bienvenidaNuevo(), trace);
   }
   if (intencion === "ayuda")       { metrics.cmd_ayuda_invoked++;   return enviar(tel, M.ayuda(username), trace); }
-  if (intencion === "puntos")      { metrics.cmd_puntos_invoked++;  return enviar(tel, M.puntos(), trace); }
+  // v3.26: SITIO command for bug troubleshooting
+  if (intencion === "sitio")       { metrics.cmd_sitio_invoked++;   return enviar(tel, M.sitio(), trace); }
+  if (intencion === "puntos")      {
+    metrics.cmd_puntos_invoked++;
+    // v3.26: si el usuario pregunta sus puntos y tiene canjes huérfanos, fuerza el sync
+    // (no esperamos respuesta — fire-and-forget)
+    sbRpc("auto_sync_all_orphans", {}, trace).catch(() => {});
+    return enviar(tel, M.puntos(), trace);
+  }
   if (intencion === "premios")     { metrics.cmd_premios_invoked++; return enviar(tel, M.premios(), trace); }
   if (intencion === "tiendas")     { metrics.cmd_tiendas_invoked++; return enviar(tel, M.tiendas(), trace); }
   if (intencion === "reglas")      { metrics.cmd_reglas_invoked++;  return enviar(tel, M.reglas(), trace); }
