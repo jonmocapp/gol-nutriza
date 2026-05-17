@@ -1,11 +1,28 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRIZA — BOT v3.22 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRIZA — BOT v3.23 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutriza · WhatsApp-native                       ║
 // ║                                                                              ║
-// ║  v3.22: AIRTABLE CONSOLIDADO EN BOT CONTROL                                  ║
+// ║  v3.23: BACKEND FIXES + cleanup wrapper                                      ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 //
-// ─── NUEVO EN v3.22 ─────────────────────────────────────────────────────────
+// ─── NUEVO EN v3.23 (deployment 16 may 2026) ────────────────────────────────
+// FIX CRÍTICO #1: preview_ticket(text) restaurado en Supabase (había sido
+//   dropeado por migración cleanup_phase1). Sin esto, el bot fallaba en cada
+//   folio con "saturado".
+// FIX CRÍTICO #2: 11 RPCs ahora con GRANT EXECUTE a anon. El bot usa
+//   SUPABASE_ANON_KEY → cualquier call → 401 → "saturado". Resuelto.
+// FIX CRÍTICO #3: Cambio cleanup_stuck_sessions → bot_cleanup_sessions
+//   (wrapper anon-safe que internamente llama cleanup_stuck_sessions con
+//   service_role implícito). Elimina el 401 cada 5 min en logs.
+// MEJORA #1: get_wa_profile ahora retorna wa_puntos_total, wa_best_session_score,
+//   engagement_tier. Bot puede ignorarlos por ahora (backward compatible).
+// MEJORA #2: wa_broadcast_recipients excluye engagement_tier='ARCHIVADO'.
+//   No gasta mensajes en cuentas muertas (>30 días sin actividad).
+// MEJORA #3: CHECK constraint en wa_phase (defensa en profundidad).
+// MEJORA #4: bot_diagnostics() nueva — `SELECT bot_diagnostics();` retorna
+//   todo el estado del sistema en un JSON. Util para debug rápido.
+//
+// ─── HEREDADO DE v3.22 ──────────────────────────────────────────────────────
 // C2. Consolidación Airtable. Bot ya no escribe a Engine v2 (appDnuaIHpVrXTpz1).
 //     TODO va a Bot Control (apprLebqIDBaogjDJ):
 //       - Usuarios (con Marca, Tienda, Estado, IP, Sospechoso)
@@ -167,7 +184,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.22";
+const VERSION         = "3.23";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -2374,7 +2391,7 @@ async function start() {
   // Libera sesiones >15 min sin completar: borra redemption + libera current_ticket_code
   setInterval(async () => {
     try {
-      const res = await sbRpc("cleanup_stuck_sessions", { p_timeout_minutes: 15 }, null);
+      const res = await sbRpc("bot_cleanup_sessions", {}, null);
       if (res?.released > 0) {
         log.info(null, `🧹 Cleanup liberó ${res.released} sesiones atoradas`);
       }
