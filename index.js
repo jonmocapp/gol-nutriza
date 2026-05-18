@@ -1,17 +1,33 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRIZA — BOT v3.26 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRIZA — BOT v3.27 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutriza · WhatsApp-native                       ║
 // ║                                                                              ║
-// ║  v3.26: Bot más amigable que guía cuando el sitio falla                      ║
+// ║  v3.27: UX 360° refactor — bot directo, sin vueltas                          ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 //
-// ─── NUEVO EN v3.26 (17 may 2026 PM) ────────────────────────────────────────
+// ─── NUEVO EN v3.27 (18 may 2026) ───────────────────────────────────────────
+// Refactor completo de UX basado en stress test con usuarios reales:
+//
+// • PUNTOS ahora muestra puntaje + posición DIRECTO en WhatsApp (no link)
+// • MI LINK (o LINK) → reenvía el último magic link activo
+// • OTRA RONDA → hype + imagen del folio + CTA (intent nuevo)
+// • Profanity filter mejorado:
+//     - Bloquea personajes públicos (políticos, narcos, celebridades)
+//     - Bloquea albures MX (BenitoCamelo, RosaCagalindo, etc.)
+//     - Reduce false positives (KillerJack95 ya pasa)
+// • Mensajes más cortos: regla "1 mensaje = 1 acción clara"
+// • Tono unificado: mexa casual, "Gol" como personaje del bot
+// • rondaCompletada ahora incluye posición en leaderboard
+// • Bienvenidas: 4 → 2 variantes (nuevo / conocido con sub-estados)
+// • Mensajes con menos tips innecesarios al final
+// • Folio expirado: "tu ticket duró 2 días" (era "mándame en 2 días")
+// • SITIO eliminado (ya no necesario tras fix de frontend)
+//
+// ─── HEREDADO DE v3.26 (17 may 2026 PM) ────────────────────────────────────
 // Mientras se arreglan los bugs del sitio web (Mohammad), el bot ahora:
 // • Mensaje del magic link incluye tips para los bugs visuales del sitio
 // • Mensaje post-canje avisa que el puntaje aparece en 2-3 min
-// • Nuevo comando SITIO → guía paso a paso para problemas comunes
 // • Comando PUNTOS dispara auto_sync_all_orphans (fuerza el ranking)
-// • Comando AYUDA actualizado con SITIO y mejor empatía
 // • Si el usuario reporta error, sugerencias específicas y SOPORTE
 //
 // ─── HEREDADO DE v3.25 (17 may 2026) ────────────────────────────────────────
@@ -77,7 +93,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.26";
+const VERSION         = "3.27";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -307,7 +323,8 @@ const metrics = {
   cmd_folio_invoked:        0,
   cmd_reiniciar_invoked:    0,
   cmd_soporte_invoked:      0,
-  cmd_sitio_invoked:        0,
+  cmd_mi_link_invoked:      0,
+  cmd_otra_ronda_invoked:   0,
   soporte_tickets_created:  0,
   reengagement_triggered:   0,
   // v3.25: admin endpoints
@@ -1000,60 +1017,50 @@ function atLog(tel, mensaje, direccion, fase) {
 const M = {
   // ─── BIENVENIDA NUEVA ────────────────────────────────────────────────────
   bienvenidaNuevo: () =>
-`¡Quiúbole! ⚽ Soy *Gol*, tu bot oficial de *Fanáticos del Sabor*.
+`¡Quiúbole! ⚽ Soy *Gol* — el bot de *Fanáticos del Sabor*.
 
-Te ayudo a jugar, ganar puntos y competir por *81 premios* — incluyendo Meet & Greet con La Cotorrisa, Nintendo Switch 2 y más.
+Compra en *Nutrisa, Moyo, Cielito Café o Chilim Balam*, mándame tu folio y juegas por *81 premios*: Meet & Greet con La Cotorrisa, Nintendo Switch 2, LEGO y más.
 
-🎫 *Para empezar, mándame tu folio:*
-↳ Son los *21 dígitos* que están arriba del ticket
-↳ Siempre empiezan con *84*
-↳ Cópialo directo (no funciona la foto)
-↳ Debe ser de los últimos *${DIAS_VALIDEZ} días*
+🎫 *Mándame los 21 dígitos del folio* (arriba del ticket, empiezan con 84).
 
-¿No sabes dónde está el folio? Escribe *FOLIO* y te muestro 📋
-¿Curioso de los premios? Escribe *PREMIOS* 🏆`,
+¿Dudas? Escribe *AYUDA*.`,
 
   // ─── BIENVENIDA CONOCIDO (3 variantes) ───────────────────────────────────
   bienvenidaConocido: (username, rondasHoy) => {
     if (rondasHoy >= RONDAS_MAX) {
       return `¡Qué onda *${username}*! 🏆
 
-Ya completaste tus *${RONDAS_MAX} rondas* hoy. Eres oficialmente un *Fanático* del día.
+Ya jugaste tus *${RONDAS_MAX} rondas* de hoy. Se reinician mañana a *medianoche CDMX*.
 
-🌅 Se reinician mañana a *medianoche (hora CDMX)*.
+Mira tu posición → *PUNTOS*`;
+    }
+    if (rondasHoy === 0) {
+      return `¡Qué onda *${username}*! 👋
 
-📊 Mira tu posición ahora → *PUNTOS*
-🏆 Recordatorio de premios → *PREMIOS*`;
+Tienes *${RONDAS_MAX} rondas* disponibles hoy.
+
+🎫 Manda un folio para empezar, o escribe *PUNTOS* para ver tu posición.`;
     }
     return `¡Qué onda *${username}*! 👋
 
-📊 Llevas *${rondasHoy}/${RONDAS_MAX}* rondas hoy — vas bien, quedan *${RONDAS_MAX - rondasHoy}*.
+Vas en *${rondasHoy}/${RONDAS_MAX}* rondas hoy. Te quedan *${RONDAS_MAX - rondasHoy}*.
 
-🎫 Manda tu próximo folio cuando lo tengas.
-
-💡 Tip: revisa tu posición en el leaderboard con *PUNTOS*`;
+🎫 Manda tu siguiente folio, o escribe *PUNTOS* para ver tu posición.`;
   },
 
   // v3.25: re-engagement (3+ días sin jugar)
   bienvenidaReEngagement: (username) =>
-`👋 ¡*${username}*, te extrañábamos!
+`*${username}*, te extrañábamos 👀
 
-Llevas algunos días sin jugar y la campaña sigue. *81 premios* esperando 🏆
+La campaña sigue y hay *81 premios* en juego. Termina el *${CAMPAIGN_END_DATE}*.
 
-🎫 ¿Tienes ticket reciente? Mándame el folio.
-📊 ¿Curioso del top? Escribe *PUNTOS*.
-
-🔥 Recuerda: la campaña termina el *${CAMPAIGN_END_DATE}*.`,
+🎫 Manda un folio para jugar, o escribe *PUNTOS* para ver tu posición.`,
 
   // v3.25: bienvenida nuevo día (rondas se acaban de resetear)
   bienvenidaNuevoDia: (username) =>
-`☀️ ¡Quiúbole otra vez, *${username}*!
+`☀️ ¡Quiúbole, *${username}*!
 
-Tus rondas se reiniciaron — tienes *${RONDAS_MAX} nuevas* para hoy.
-
-🎫 Manda un folio cuando estés listo.
-
-💡 Tip: revisa tu posición → *PUNTOS*`,
+Tienes *${RONDAS_MAX} rondas nuevas* para hoy. Manda un folio cuando estés listo.`,
 
   // ─── ATAJO DESDE WEB ─────────────────────────────────────────────────────
   atajoConocido: (username, rondasHoy) =>
@@ -1066,20 +1073,15 @@ ${rondasHoy < RONDAS_MAX
   // ─── FOLIO VÁLIDO — PIDE APODO ───────────────────────────────────────────
   folioOkPideNombre: (storeName, brand) => {
     const tienda = storeName ? `*${brand}* — ${storeName}` : "*Grupo Nutriza*";
-    return `✅ *¡Folio válido!*
-Compra registrada en ${tienda} 🥑
+    return `✅ Folio válido — compra en ${tienda} 🥑
 
-🎯 *Último paso:* elige tu *apodo* para el leaderboard.
+🎯 *Último paso:* elige tu *apodo* para el ranking.
 
-📝 Reglas:
-↳ De *3 a 20 caracteres*
-↳ Solo *letras, números y _*
-↳ Sin espacios, sin acentos
-↳ Es un *apodo* — no tu nombre real
+Reglas: 3-20 caracteres, sin espacios, sin acentos. Solo letras, números y _.
 
-💡 Ese apodo te identifica para *toda la campaña*. Elige bueno.
+Ejemplos: *Goleador26*, *NutriFan*, *MoyoQueen*, *ChilimRey*
 
-Ejemplos: *Goleador26*, *NutriFan*, *MoyoQueen*, *ChilimRey*`;
+💡 Ese apodo te identifica toda la campaña. Elige bueno.`;
   },
 
   // ─── USERNAME RECHAZADO — FORMATO ────────────────────────────────────────
@@ -1112,39 +1114,25 @@ Cada apodo es único — primer fanático que lo elige se lo queda.
 
   // ─── REGISTRO COMPLETO (PRIMERA RONDA) ───────────────────────────────────
   registroCompleto: (username, magicLink, rondasHoy) =>
-`¡Bienvenido, *${username}*! 🎉
-Ya eres oficial *Fanático del Sabor*.
+`¡Listo, *${username}*! 🎉 Ya eres oficial *Fanático del Sabor*.
 
-🎮 *Toca aquí para jugar tu primera ronda:*
+🎮 *Toca aquí para jugar:*
 ${magicLink}
 
-⚡ Solo da click — sin contraseñas, sin formularios.
+⏱️ El link es solo tuyo. Expira en *1 hora* y funciona *una sola vez*.
 
-🔐 *Solo para ti, importante:*
-↳ Este link es *único y personal*
-↳ Expira en *1 hora*
-↳ Funciona *una sola vez*
-
-🎯 Vas en la *ronda ${rondasHoy} de ${RONDAS_MAX}* del día.
-
-💡 *Si el sitio te muestra algo raro* (juegos ya jugados, pantalla de login con email), escribe *SITIO* aquí y te ayudo a arreglarlo.
-
-¿Listo? Toca el link ⬆️`,
+Vas en la ronda *${rondasHoy}/${RONDAS_MAX}* de hoy.`,
 
   // ─── FOLIO ADICIONAL (RONDAS 2+) ─────────────────────────────────────────
   folioAdicional: (username, rondaNum, magicLink) =>
 `✅ ¡Otra ronda, *${username}*!
 
-🎮 *Ronda ${rondaNum} de ${RONDAS_MAX}* — tu link:
+🎮 *Ronda ${rondaNum}/${RONDAS_MAX}* — toca aquí:
 ${magicLink}
 
-⚡ Click directo. 1 hora de vida. Solo tú.
-
 ${rondaNum < RONDAS_MAX
-  ? `💪 Te quedan *${RONDAS_MAX - rondaNum} rondas* hoy. ¡A ganar puntos!`
-  : `🔥 ¡Última ronda de hoy! Mañana a medianoche CDMX se reinician.`}
-
-💡 *¿El sitio te muestra los juegos como ya jugados o te lleva a un login?* Escribe *SITIO* y te paso el truco para arreglarlo.`,
+  ? `Te quedan *${RONDAS_MAX - rondaNum} rondas* hoy. ¡A subir en el ranking!`
+  : `🔥 Última ronda de hoy. Mañana a medianoche se reinician.`}`,
 
   // ─── RE-ENVÍO DE MAGIC LINK (FIX v3.24 #1) ───────────────────────────────
   reenvioLink: (username, magicLink) =>
@@ -1158,46 +1146,44 @@ ${magicLink}
 ⏱️ Tienes hasta *15 minutos* para terminar antes de que el folio se libere automático.
 🔄 Si recibiste varios links, *usa el más reciente* — los anteriores ya no funcionan.`,
 
-  // ─── RONDA COMPLETADA (FIX v3.24 #2, con acumulado en v3.25) ─────────────
-  rondaCompletada: (username, score, rondasHoy, puntosTotal) =>
-`🎉 *¡Cerraste la ronda, ${username}!*
+  // ─── RONDA COMPLETADA (FIX v3.24 #2, con acumulado en v3.25, con posición en v3.27) ─────────────
+  rondaCompletada: (username, score, rondasHoy, puntosTotal, posicion, totalJugadores) => {
+    let posLine = "";
+    if (posicion && totalJugadores) {
+      posLine = `\n🏆 Vas en el lugar *#${posicion}* de ${fmt(totalJugadores)}`;
+    }
+    return `🎉 *¡Cerraste la ronda, ${username}!*
 
-⚽ *${fmt(score)} puntos* en esta partida
-🎮 Llevas *${rondasHoy}/${RONDAS_MAX}* rondas hoy
-🔥 Total acumulado: *${fmt(puntosTotal)} pts*
+⚽ Esta partida: *${fmt(score)} pts*
+🔥 Total acumulado: *${fmt(puntosTotal)} pts*${posLine}
 
-📊 ¿Curioso de tu posición? Escribe *PUNTOS*
+Te quedan *${RONDAS_MAX - rondasHoy} rondas* hoy — manda otro folio para subir más.`;
+  },
 
-🎫 Te quedan *${RONDAS_MAX - rondasHoy} rondas* — manda otro folio para seguir.
-
-💡 Recuerda: las rondas se reinician mañana a medianoche (CDMX).`,
-
-  rondaCompletadaMaxDia: (username, score, puntosTotal) =>
-`🏆 *¡TODAS las rondas del día, ${username}!*
+  rondaCompletadaMaxDia: (username, score, puntosTotal, posicion, totalJugadores) => {
+    let posLine = "";
+    if (posicion && totalJugadores) {
+      posLine = `\n🏆 Vas en el lugar *#${posicion}* de ${fmt(totalJugadores)}`;
+    }
+    return `🏆 *¡Todas tus rondas, ${username}!*
 
 ⚽ Última ronda: *${fmt(score)} pts*
-🔥 Total del día acumulado: *${fmt(puntosTotal)} pts*
-👑 Eres *Fanático* dedicado.
+🔥 Total del día: *${fmt(puntosTotal)} pts*${posLine}
 
-🌅 Mañana a *medianoche (CDMX)* se reinician.
+Mañana a *medianoche CDMX* se reinician las rondas.
 
-📊 Tu posición en el leaderboard → *PUNTOS*
-🏆 Recordatorio de premios → *PREMIOS*
-
-💡 Tip: comparte tus rondas con amigos para subir más alto 🚀 — pero *no compartas tus folios* (cada uno es único).`,
+💡 Comparte con tus amigos para que jueguen — pero *no compartas tus folios* (cada uno es único).`;
+  },
 
   // ─── MAX RONDAS (si manda folio nuevo después de 5) ──────────────────────
   maxRondas: (username) =>
-`Ya completaste tus *${RONDAS_MAX} rondas* de hoy, *${username}* 🏆
+`Ya jugaste tus *${RONDAS_MAX} rondas* de hoy, *${username}* 🏆
 
-Guarda ese folio — *sigue siendo válido por ${DIAS_VALIDEZ} días*. Mañana lo puedes canjear.
+Guarda ese folio — sigue válido por *${DIAS_VALIDEZ} días*. Mañana lo canjeas.
 
-🌅 Mañana a medianoche CDMX se reinician (la hora de tu celular no importa).
+🌅 Las rondas se reinician a *medianoche CDMX*.
 
-Mientras tanto:
-📊 Tu posición → *PUNTOS*
-🏆 Lo que puedes ganar → *PREMIOS*
-👥 Cuéntale a tus amigos para que jueguen también`,
+📊 Mira tu posición → *PUNTOS*`,
 
   // ─── ERRORES DE FOLIO ────────────────────────────────────────────────────
   folioError: (error) => {
@@ -1257,11 +1243,11 @@ Si sí: el ticket podría estar dañado, intenta con otro.
       expired:
 `😕 Ese ticket ya tiene más de *${DIAS_VALIDEZ} días*.
 
-Solo acepto folios de los últimos ${DIAS_VALIDEZ} días — para que la campaña sea justa para todos.
+Los tickets duran *${DIAS_VALIDEZ} días* desde la compra. Después no se pueden canjear.
 
-💡 *Pro tip:* manda tu folio el mismo día de la compra. Así nunca lo pierdes.
+🎫 ¿Tienes uno más reciente? Mándame ese.
 
-🎫 ¿Tienes un ticket más reciente? Mándame ese.`,
+💡 *Pro tip:* manda tu folio el mismo día de la compra. Así nunca se vence.`,
 
       not_yet_valid:
 `La fecha del ticket todavía no llega 🤔
@@ -1350,32 +1336,55 @@ Inténtalo en *30 segundos*. Tu folio no se ha perdido.
 
   // ─── AYUDA / COMANDOS ────────────────────────────────────────────────────
   ayuda: (u) =>
-`👋 Soy *Gol*, tu bot de *Fanáticos del Sabor*${u ? ` — tu apodo es *${u}*` : ""}.
+`👋 Soy *Gol*${u ? `, tu apodo es *${u}*` : ""}.
 
-🤖 Soy un bot, pero estoy para ayudarte. Esto es lo que sé hacer:
+Esto es lo que sé hacer:
 
-🎫 *Manda un folio* → Para jugar una ronda
-📊 *PUNTOS* → Tu posición en el leaderboard
+🎫 *Manda un folio* → Jugar una ronda
+📊 *PUNTOS* → Tu puntaje y posición
+🔗 *MI LINK* → Reenvío tu último link
+🎮 *OTRA RONDA* → Pedir otro folio
 🏆 *PREMIOS* → Lo que puedes ganar
 🏪 *TIENDAS* → Marcas participantes
-📋 *REGLAS* → Cómo funciona todo
-🔍 *FOLIO* → Dónde está el folio en mi ticket
-🌐 *SITIO* → ¿Problemas con la página web?
+📋 *REGLAS* → Cómo funciona
+🔍 *FOLIO* → Dónde está en el ticket
 🔄 *REINICIAR* → Empezar de cero
 
-⚠️ *No leo:* fotos, audios, videos, ni stickers.
+🆘 *SOPORTE* → Hablar con un humano
 
-🆘 ¿Necesitas ayuda humana? Escribe *SOPORTE* y un humano de Grupo Nutriza te contacta.`,
+⚠️ No leo fotos, audios, videos ni stickers.`,
 
-  // ─── PUNTOS ──────────────────────────────────────────────────────────────
-  puntos: () =>
-`📊 Ve tu puntaje aquí:
-${SITE_URL}
+  // ─── PUNTOS (v3.27: muestra puntaje + posición DIRECTO en WA) ────────────
+  puntos: (username, stats) => {
+    // Si no jugó nada todavía
+    if (!stats || stats.puntos_total === 0 || !stats.posicion) {
+      return `📊 Aún no tienes puntaje, *${username}*.
 
-Entra con el último link que te envié.
-(Si expiró, mándame un folio nuevo y te genero otro.)
+🎫 Manda un folio para jugar tu primera ronda y aparecer en el ranking.
 
-💡 Tu posición se actualiza en *2-3 minutos* después de cerrar cada ronda. Si acabas de terminar de jugar, dale un poco de tiempo.`,
+💡 Cada folio = 1 ronda de 4 minijuegos.`;
+    }
+
+    const top3 = (stats.top_3 || []).slice(0, 3);
+    const top3Lines = top3.map((u, i) => {
+      const medal = ["🥇", "🥈", "🥉"][i] || "•";
+      const isYou = u.username === username ? " ← tú" : "";
+      return `${medal} *${u.username}* — ${fmt(u.puntos)} pts${isYou}`;
+    }).join("\n");
+
+    const inTop3 = top3.some(u => u.username === username);
+    const youLine = inTop3 ? "" : `\n\nTu lugar: *#${stats.posicion}* de ${fmt(stats.total_jugadores)} jugadores`;
+
+    return `📊 *${username}*, esto vas:
+
+⚽ Total acumulado: *${fmt(stats.puntos_total)} pts*
+🎯 Mejor ronda: *${fmt(stats.mejor_ronda)} pts*${youLine}
+
+🏆 *Top 3 ahora:*
+${top3Lines}
+
+🎫 ¿Quieres subir? Manda otro folio para jugar.`;
+  },
 
   // ─── PREMIOS ─────────────────────────────────────────────────────────────
   premios: () =>
@@ -1517,33 +1526,38 @@ Si cambias de opinión, escribe *SOPORTE* otra vez.
 
 ¿Otra cosa que necesites? Escribe *AYUDA*.`,
 
-  // ─── SITIO (v3.26 nuevo) — guía para bugs comunes del sitio ──────────────
-  sitio: () =>
-`🌐 *¿Problemas con el sitio?*
+  // ─── MI LINK (v3.27 nuevo) — reenvía último link activo ──────────────────
+  miLink: (username, magicLink) =>
+`🔗 Aquí va tu link, *${username}*:
 
-Estos son los más comunes y cómo arreglarlos:
+${magicLink}
 
-1️⃣ *Ves los juegos como ya jugados*
-↳ Recarga la página (jala de arriba abajo)
-↳ O cierra la pestaña y vuelve a tap al link
+⏱️ Expira en *1 hora*. Si ya pasó, manda otro folio y te genero uno nuevo.`,
 
-2️⃣ *Pantalla de login con email/contraseña*
-↳ Ignora ese login (no jala)
-↳ Escribe *REINICIAR* aquí y te mando otro link limpio
+  miLinkNoActivo: (username) =>
+`No tienes una ronda abierta ahorita, *${username || "Fanático"}* 🤔
 
-3️⃣ *Los juegos no responden al tocar*
-↳ Recarga la página
-↳ Si sigue igual, escribe *SOPORTE*
+🎫 Para jugar, *manda un folio*. Te genero un link nuevo al momento.
 
-4️⃣ *Tu puntaje no aparece en el ranking*
-↳ Espera *2-3 minutos* tras terminar la ronda
-↳ Refresca el ranking
+📊 ¿Solo querías ver tu puntaje? Escribe *PUNTOS*.`,
 
-5️⃣ *"Volver al inicio" no jala bien*
-↳ Vuelve a WhatsApp aquí
-↳ Escribe *REINICIAR* para empezar limpio
+  // ─── OTRA RONDA (v3.27 nuevo) — hype + recordatorio del folio ────────────
+  otraRonda: (username, rondasHoy) => {
+    if (rondasHoy >= RONDAS_MAX) {
+      return `Ya jugaste tus *${RONDAS_MAX} rondas* de hoy, *${username}* 🏆
 
-💡 ¿Sigue fallando? Escribe *SOPORTE* y un humano te ayuda.`,
+Mañana a *medianoche CDMX* se reinician.
+
+📊 Mira tu posición → *PUNTOS*`;
+    }
+    return `¡Va, *${username}*! 🔥
+
+Cáele por otro yogurt, café o snack a *Nutrisa, Moyo, Cielito Café o Chilim Balam* — cada compra = otra oportunidad de subir en el ranking.
+
+🎫 *Manda los 21 dígitos del folio* de tu nuevo ticket (te paso la imagen de dónde buscarlo arriba ⬆️).
+
+Te quedan *${RONDAS_MAX - rondasHoy} rondas* hoy.`;
+  },
 };
 
 // ─── DETECCIÓN DE INTENCIÓN ─────────────────────────────────────────────────
@@ -1552,11 +1566,17 @@ function detectarIntencion(texto) {
   const inc = (...w) => w.some(p => t.includes(p));
   const num = texto.replace(/\s/g, "");
   if (/^84\d{10,20}$/.test(num)) return "folio_input";
-  if (inc("INGRESAR CÓDIGO","INGRESAR CODIGO","INGRESAR FOLIO","NUEVA RONDA","OTRA RONDA","JUGAR OTRA","NUEVO FOLIO")) return "atajo_codigo";
+  // v3.27: atajo_codigo solo para los explícitos de "ingresar código" desde el sitio.
+  // OTRA RONDA y JUGAR OTRA ahora caen en el intent "otra_ronda" (más abajo) que
+  // manda hype + imagen del folio.
+  if (inc("INGRESAR CÓDIGO","INGRESAR CODIGO","INGRESAR FOLIO","NUEVO FOLIO")) return "atajo_codigo";
   // v3.25: SOPORTE antes que AYUDA (porque "AYUDA HUMANA" matchea ambos)
   if (inc("SOPORTE","AYUDA HUMANA","HABLAR CON ALGUIEN","HABLAR CON HUMANO","REPORTAR PROBLEMA","CONTACTAR HUMANO")) return "soporte";
-  // v3.26: SITIO — guía para bugs del sitio
-  if (inc("SITIO","WEB","PAGINA","PÁGINA","ERROR SITIO","NO JALA","NO FUNCIONA","BUG","NO ME DEJA","SE TRABO","SE TRABÓ","ATORADO","ATORADA")) return "sitio";
+  // v3.27: MI LINK / LINK — reenvía el último magic link activo
+  if (inc("MI LINK","MILINK","MI ENLACE","REENVIAR LINK","NUEVO LINK","DAME EL LINK","DAME EL ENLACE","NO ME LLEGA EL LINK","SE PERDIO EL LINK","ENVIA LINK")) return "mi_link";
+  if (t === "LINK" || t === "ENLACE") return "mi_link";
+  // v3.27: OTRA RONDA — el usuario pide otra ronda (sin folio aún)
+  if (inc("OTRA RONDA","QUIERO OTRA RONDA","NUEVA RONDA","JUGAR OTRA","JUGAR DE NUEVO","JUGAR OTRA VEZ","OTRA PARTIDA","UNA MÁS","UNA MAS","MAS RONDAS","MÁS RONDAS")) return "otra_ronda";
   if (t === "CANCELAR") return "cancelar";
   if (inc("AYUDA","HELP","OPCIONES","MENÚ","MENU","COMANDOS")) return "ayuda";
   if (inc("PUNT","SCORE","RANKING","COMO VOY","CÓMO VOY","MI POSICION","MI POSICIÓN")) return "puntos";
@@ -1664,14 +1684,54 @@ async function procesarMensajeCore(tel, texto, trace) {
     return enviar(tel, username ? M.bienvenidaConocido(username, rondasHoy) : M.bienvenidaNuevo(), trace);
   }
   if (intencion === "ayuda")       { metrics.cmd_ayuda_invoked++;   return enviar(tel, M.ayuda(username), trace); }
-  // v3.26: SITIO command for bug troubleshooting
-  if (intencion === "sitio")       { metrics.cmd_sitio_invoked++;   return enviar(tel, M.sitio(), trace); }
+  // v3.27: PUNTOS muestra puntaje + posición directo en WhatsApp
   if (intencion === "puntos")      {
     metrics.cmd_puntos_invoked++;
-    // v3.26: si el usuario pregunta sus puntos y tiene canjes huérfanos, fuerza el sync
-    // (no esperamos respuesta — fire-and-forget)
+    if (!userId) {
+      // Usuario no registrado todavía
+      return enviar(tel, M.bienvenidaNuevo(), trace);
+    }
+    // Forzar sync de orfanos por si hay canjes sin sesión (legacy safety net)
     sbRpc("auto_sync_all_orphans", {}, trace).catch(() => {});
-    return enviar(tel, M.puntos(), trace);
+    let statsRes = null;
+    let rpcFailed = false;
+    try {
+      statsRes = await sbRpc("get_user_stats_for_bot", { p_user_id: userId }, trace);
+    } catch (e) {
+      rpcFailed = true;
+      log.error(trace, `get_user_stats_for_bot failed: ${e.message}`);
+    }
+    // RPC técnica falló → mensaje de error temporal (no "sin puntaje")
+    if (rpcFailed) {
+      return enviar(tel, M.errorEdgeFunction(), trace);
+    }
+    // No registrado o sin puntaje → mensaje "aún no tienes puntaje"
+    if (!statsRes || statsRes.found === false) {
+      return enviar(tel, M.puntos(username || "Fanático", null), trace);
+    }
+    return enviar(tel, M.puntos(username || statsRes.username, statsRes), trace);
+  }
+  // v3.27: MI LINK — reenvía el último link activo (si hay ronda abierta)
+  if (intencion === "mi_link")     {
+    metrics.cmd_mi_link_invoked++;
+    if (!userId) {
+      return enviar(tel, M.bienvenidaNuevo(), trace);
+    }
+    const linkRes = await waAuth("get_link", { phone: tel }, trace).catch(() => null);
+    if (linkRes?.ok && linkRes.magic_link) {
+      return enviar(tel, M.miLink(username || "Fanático", linkRes.magic_link), trace);
+    }
+    return enviar(tel, M.miLinkNoActivo(username), trace);
+  }
+  // v3.27: OTRA RONDA — hype + recuerda dónde está el folio + imagen
+  if (intencion === "otra_ronda")  {
+    metrics.cmd_otra_ronda_invoked++;
+    if (!userId) {
+      return enviar(tel, M.bienvenidaNuevo(), trace);
+    }
+    // Manda primero la imagen de dónde está el folio, luego el mensaje
+    await enviarImagen(tel, IMG_FOLIO, "📋 Aquí está el folio en tu ticket — los 21 dígitos que empiezan con 84", trace);
+    return enviar(tel, M.otraRonda(username || "Fanático", rondasHoy), trace);
   }
   if (intencion === "premios")     { metrics.cmd_premios_invoked++; return enviar(tel, M.premios(), trace); }
   if (intencion === "tiendas")     { metrics.cmd_tiendas_invoked++; return enviar(tel, M.tiendas(), trace); }
@@ -2205,10 +2265,24 @@ app.post("/game-complete", async (req, res) => {
         fase: "activo",
       });
 
+      // v3.27: obtener posición en el leaderboard para incluirla en el mensaje
+      let posicion = null;
+      let totalJugadores = null;
+      try {
+        const stats = await sbRpc("get_user_stats_for_bot", { p_user_id: profile.user_id }, trace);
+        if (stats?.found) {
+          posicion = stats.posicion || null;
+          totalJugadores = stats.total_jugadores || null;
+        }
+      } catch (e) {
+        log.warn(trace, `game-complete: stats fetch failed (no crítico): ${e.message}`);
+      }
+
       // v3.25: pasar puntosTotal al mensaje para mostrar acumulado
+      // v3.27: pasar también posición y total de jugadores
       const msg = rondasHoy >= RONDAS_MAX
-        ? M.rondaCompletadaMaxDia(username, scoreNum, puntosTotal)
-        : M.rondaCompletada(username, scoreNum, rondasHoy, puntosTotal);
+        ? M.rondaCompletadaMaxDia(username, scoreNum, puntosTotal, posicion, totalJugadores)
+        : M.rondaCompletada(username, scoreNum, rondasHoy, puntosTotal, posicion, totalJugadores);
 
       await enviar(tel, msg, trace);
       log.info(trace, `🎉 game-complete WA sent: rondas=${rondasHoy}/${RONDAS_MAX}, score=${scoreNum}, total=${puntosTotal}`);
