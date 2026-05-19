@@ -1,11 +1,17 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRIZA — BOT v3.27 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRIZA — BOT v3.28 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutriza · WhatsApp-native                       ║
 // ║                                                                              ║
-// ║  v3.27: UX 360° refactor — bot directo, sin vueltas                          ║
+// ║  v3.28: Copy refinement basado en feedback del stress test                   ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 //
-// ─── NUEVO EN v3.27 (18 may 2026) ───────────────────────────────────────────
+// ─── NUEVO EN v3.28 (18 may 2026 PM2) ───────────────────────────────────────
+// Refinamientos de copy tras stress test:
+// • "¡Quiúbole!" → "¡Hola!" en todos los mensajes
+// • bienvenidaNuevo restaurado al estilo original (más warm)
+// • AYUDA: restaurada la línea "No leo fotos, audios, videos ni stickers"
+//
+// ─── HEREDADO DE v3.27 ──────────────────────────────────────────────────────
 // Refactor completo de UX basado en stress test con usuarios reales:
 //
 // • PUNTOS ahora muestra puntaje + posición DIRECTO en WhatsApp (no link)
@@ -93,7 +99,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.27";
+const VERSION         = "3.28";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -1017,13 +1023,18 @@ function atLog(tel, mensaje, direccion, fase) {
 const M = {
   // ─── BIENVENIDA NUEVA ────────────────────────────────────────────────────
   bienvenidaNuevo: () =>
-`¡Quiúbole! ⚽ Soy *Gol* — el bot de *Fanáticos del Sabor*.
+`¡Hola! ⚽ Soy *Gol*, tu guía oficial en *Fanáticos del Sabor*.
 
-Compra en *Nutrisa, Moyo, Cielito Café o Chilim Balam*, mándame tu folio y juegas por *81 premios*: Meet & Greet con La Cotorrisa, Nintendo Switch 2, LEGO y más.
+Para registrarte y empezar a jugar necesito el folio de tu ticket 🎫
 
-🎫 *Mándame los 21 dígitos del folio* (arriba del ticket, empiezan con 84).
+📍 *Dónde encontrarlo:*
+↳ Está en la parte de arriba del ticket
+↳ Empieza con *84* y tiene *21 dígitos*
+↳ Cópialo directo del ticket (no me mandes la foto, solo los números)
 
-¿Dudas? Escribe *AYUDA*.`,
+⏱️ *Importante:* tu ticket debe ser de los últimos *${DIAS_VALIDEZ} días*.
+
+¡Mándamelo cuando lo tengas!`,
 
   // ─── BIENVENIDA CONOCIDO (3 variantes) ───────────────────────────────────
   bienvenidaConocido: (username, rondasHoy) => {
@@ -1058,7 +1069,7 @@ La campaña sigue y hay *81 premios* en juego. Termina el *${CAMPAIGN_END_DATE}*
 
   // v3.25: bienvenida nuevo día (rondas se acaban de resetear)
   bienvenidaNuevoDia: (username) =>
-`☀️ ¡Quiúbole, *${username}*!
+`☀️ ¡Hola, *${username}*!
 
 Tienes *${RONDAS_MAX} rondas nuevas* para hoy. Manda un folio cuando estés listo.`,
 
@@ -1350,9 +1361,9 @@ Esto es lo que sé hacer:
 🔍 *FOLIO* → Dónde está en el ticket
 🔄 *REINICIAR* → Empezar de cero
 
-🆘 *SOPORTE* → Hablar con un humano
+⚠️ *No leo:* fotos, audios, videos, ni stickers.
 
-⚠️ No leo fotos, audios, videos ni stickers.`,
+🆘 *SOPORTE* → Hablar con un humano de Grupo Nutriza.`,
 
   // ─── PUNTOS (v3.27: muestra puntaje + posición DIRECTO en WA) ────────────
   puntos: (username, stats) => {
