@@ -1,11 +1,19 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRIZA — BOT v3.28 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRIZA — BOT v3.33 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutriza · WhatsApp-native                       ║
 // ║                                                                              ║
-// ║  v3.28: Copy refinement basado en feedback del stress test                   ║
+// ║  v3.33: PHANTOM SCORES bug fix + DIAS_VALIDEZ 3 dias                         ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 //
-// ─── NUEVO EN v3.28 (18 may 2026 PM2) ───────────────────────────────────────
+// ─── NUEVO EN v3.33 (20 may 2026 — pre-launch) ──────────────────────────────
+// 🚨 BUG CRÍTICO descubierto pre-launch:
+// La RPC auto_sync_all_orphans generaba scores random para folios canjeados
+// sin sesión real. Causaba el caso "Goleador" (puntos sin haber jugado).
+// Ya neutralizada en Supabase. Quitamos la llamada del bot.
+//
+// También: DIAS_VALIDEZ 2 → 3 (folios ahora válidos 3 días)
+//
+// ─── HEREDADO DE v3.28 ──────────────────────────────────────────────────────
 // Refinamientos de copy tras stress test:
 // • "¡Quiúbole!" → "¡Hola!" en todos los mensajes
 // • bienvenidaNuevo restaurado al estilo original (más warm)
@@ -17,39 +25,25 @@
 // • PUNTOS ahora muestra puntaje + posición DIRECTO en WhatsApp (no link)
 // • MI LINK (o LINK) → reenvía el último magic link activo
 // • OTRA RONDA → hype + imagen del folio + CTA (intent nuevo)
-// • Profanity filter mejorado:
-//     - Bloquea personajes públicos (políticos, narcos, celebridades)
-//     - Bloquea albures MX (BenitoCamelo, RosaCagalindo, etc.)
-//     - Reduce false positives (KillerJack95 ya pasa)
+// • Profanity filter mejorado
 // • Mensajes más cortos: regla "1 mensaje = 1 acción clara"
 // • Tono unificado: mexa casual, "Gol" como personaje del bot
 // • rondaCompletada ahora incluye posición en leaderboard
 // • Bienvenidas: 4 → 2 variantes (nuevo / conocido con sub-estados)
-// • Mensajes con menos tips innecesarios al final
-// • Folio expirado: "tu ticket duró 2 días" (era "mándame en 2 días")
 // • SITIO eliminado (ya no necesario tras fix de frontend)
 //
 // ─── HEREDADO DE v3.26 (17 may 2026 PM) ────────────────────────────────────
 // Mientras se arreglan los bugs del sitio web (Mohammad), el bot ahora:
 // • Mensaje del magic link incluye tips para los bugs visuales del sitio
 // • Mensaje post-canje avisa que el puntaje aparece en 2-3 min
-// • Comando PUNTOS dispara auto_sync_all_orphans (fuerza el ranking)
 // • Si el usuario reporta error, sugerencias específicas y SOPORTE
 //
 // ─── HEREDADO DE v3.25 (17 may 2026) ────────────────────────────────────────
-// UX REWRITE: cada mensaje rediseñado con personalidad mexicana, ejemplos
-//   concretos, footers de discoverability, y micro-celebraciones. 22 mensajes
-//   refinados. Footer rotativo invita a descubrir comandos (PREMIOS, PUNTOS,
-//   AYUDA, FOLIO, SOPORTE).
-// COMANDO SOPORTE: escape hatch humano. User escribe SOPORTE → bot pide
-//   contexto → registra en Airtable Soporte → Jonny responde desde admin.
-// PUNTAJE ACUMULADO: rondaCompletada ahora muestra puntos totales además
-//   del puntaje de la ronda actual. Sense of progression.
+// UX REWRITE: cada mensaje rediseñado con personalidad mexicana.
+// COMANDO SOPORTE: escape hatch humano.
+// PUNTAJE ACUMULADO: rondaCompletada ahora muestra puntos totales.
 // DETECCIÓN DE RE-ENGAGEMENT: si user no juega 3+ días, mensaje especial.
-// ENDPOINTS ADMIN para Airtable:
-//   POST /send-direct  → Jonny manda mensaje custom a un usuario
-//   POST /admin-broadcast-trigger → fuerza procesamiento de cola broadcasts
-//   GET  /admin-health-summary → datos compactos para dashboard de Jonny
+// ENDPOINTS ADMIN para Airtable.
 //
 // ─── HEREDADO DE v3.24 ──────────────────────────────────────────────────────
 // FIX #1: session_active → regenera y reenvía magic link
@@ -58,15 +52,14 @@
 //
 // ─── HEREDADO DE v3.23 ──────────────────────────────────────────────────────
 // preview_ticket restaurado, 11 RPCs con GRANT a anon,
-// bot_cleanup_sessions wrapper, get_wa_profile mejorado,
-// wa_broadcast_recipients filtra ARCHIVADO, CHECK constraint wa_phase
+// bot_cleanup_sessions wrapper, get_wa_profile mejorado.
 //
 // ─── HEREDADO DE v3.22 ──────────────────────────────────────────────────────
-// Consolidación a Bot Control (apprLebqIDBaogjDJ). Engine v2 deprecado.
+// Consolidación a Bot Control (apprLebqIDBaogjDJ).
 //
 // ─── HEREDADO DE v3.21 ──────────────────────────────────────────────────────
 // Profanidad unificada via is_profane RPC.
-// wa_rondas_hoy se incrementa al COMPLETAR 4 minijuegos (no al canjear).
+// wa_rondas_hoy se incrementa al COMPLETAR 4 minijuegos.
 //
 // ─── ENV VARS REQUERIDAS ────────────────────────────────────────────────────
 //   WHATSAPP_TOKEN, PHONE_NUMBER_ID, AIRTABLE_TOKEN,
@@ -99,7 +92,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.28";
+const VERSION         = "3.33";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -129,10 +122,7 @@ const BC_USUARIOS    = "tblMLwnH97t7WDix7";
 const BC_BROADCASTS  = "tbluRhALErgxpB3x9";
 const BC_LEADERBOARD = "tblOEJkSlJuQfO5pE";
 const BC_CANJES      = "tbl0YNSJEQPE4jsYO";
-// v3.25: NUEVA tabla Soporte — Jonny debe crearla en Airtable con estos field IDs
-// (o ajustarlos aquí si Airtable asigna otros). Si la tabla NO existe, el bot
-// silenciosamente no hace sync de soporte pero el flujo funciona igual.
-const BC_SOPORTE     = process.env.BC_SOPORTE_TABLE_ID || ""; // setear cuando Jonny cree la tabla
+const BC_SOPORTE     = process.env.BC_SOPORTE_TABLE_ID || "";
 
 const BCU = {
   TEL:               "fldnrcKBlRy1DXZGC",
@@ -182,8 +172,6 @@ const BCB = {
   ENV:  "fldwtMlLh3XJOmKvc",
   FALL: "fldJ9APbcGZSxMPfC",
 };
-// v3.25: Field IDs para Soporte. Si Jonny no los conoce aún, el bot usa
-// nombres legibles (field names) como fallback — Airtable acepta ambos.
 const BCS = {
   TELEFONO:     process.env.BCS_TELEFONO_FIELD     || "Teléfono",
   USERNAME:     process.env.BCS_USERNAME_FIELD     || "Username",
@@ -208,11 +196,11 @@ const FB = { MSG:"fldadSOH0WyWbj622", EST:"fldEBKYSWpfXUseZa", ENV:"fldM0GtUD8Jk
 
 // ─── CONSTANTES ─────────────────────────────────────────────────────────────
 const RONDAS_MAX           = 5;
-const DIAS_VALIDEZ         = 2;
+const DIAS_VALIDEZ         = 3;
 const SITE_URL             = "https://fanaticosdelsabor.com";
 const IMG_FOLIO            = "https://i.ibb.co/TDP6mnRz/Folio.jpg";
-const CAMPAIGN_END_DATE    = "9 julio";  // v3.25: visible en varios mensajes
-const DIAS_RE_ENGAGEMENT   = 3;          // v3.25: días sin jugar → mensaje especial
+const CAMPAIGN_END_DATE    = "9 julio";
+const DIAS_RE_ENGAGEMENT   = 3;
 
 const FETCH_TIMEOUT_MS     = 8000;
 const EDGE_FUNC_TIMEOUT_MS = 12000;
@@ -234,7 +222,6 @@ const AT_QUEUE_MAX          = 5000;
 const AT_CIRCUIT_FAILS      = 3;
 const AT_CIRCUIT_RECOVER_MS = 60_000;
 
-// v3.25: máximo de caracteres para mensaje de soporte
 const SOPORTE_MAX_CHARS    = 1000;
 
 // ─── ESTADO EN MEMORIA ──────────────────────────────────────────────────────
@@ -320,7 +307,6 @@ const metrics = {
   game_complete_received:  0,
   game_complete_failed:    0,
   game_complete_unauth:    0,
-  // v3.25: métricas UX nuevas
   cmd_ayuda_invoked:        0,
   cmd_premios_invoked:      0,
   cmd_puntos_invoked:       0,
@@ -333,7 +319,6 @@ const metrics = {
   cmd_otra_ronda_invoked:   0,
   soporte_tickets_created:  0,
   reengagement_triggered:   0,
-  // v3.25: admin endpoints
   admin_send_direct_received: 0,
   admin_send_direct_unauth:   0,
   admin_broadcast_triggered:  0,
@@ -365,7 +350,6 @@ function maskLink(url) {
   return url.substring(0, 40) + '...[REDACTED]';
 }
 
-// v3.25: formateo de números con coma (1240 → "1,240")
 function fmt(n) {
   if (typeof n !== 'number') n = parseInt(n, 10) || 0;
   return n.toLocaleString('es-MX');
@@ -835,7 +819,6 @@ async function bcSyncCanje(folio, tel, username, storeInfo, rondaNum, ip) {
   }
 }
 
-// v3.25: registrar ticket de soporte en Airtable Bot Control tabla Soporte
 async function bcSyncSoporte(tel, username, mensaje, categoria = "Otro") {
   if (!AIRTABLE_TOKEN) return;
   if (!BC_SOPORTE) {
@@ -1010,18 +993,10 @@ function atLog(tel, mensaje, direccion, fase) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// v3.25 — MENSAJES AL USUARIO (UX rewrite completo)
-// ════════════════════════════════════════════════════════════════════════════
-// Filosofía:
-//   • Personalidad mexicana de Gol (directo, divertido, sin ser zalamero)
-//   • Discoverability: footers que invitan a descubrir comandos
-//   • Ejemplos concretos en vez de instrucciones abstractas
-//   • Acumulado de puntos para sense of progression
-//   • Escape hatch a SOPORTE cuando algo falla
+// MENSAJES AL USUARIO
 // ════════════════════════════════════════════════════════════════════════════
 
 const M = {
-  // ─── BIENVENIDA NUEVA ────────────────────────────────────────────────────
   bienvenidaNuevo: () =>
 `¡Hola! ⚽ Soy *Gol*, tu guía oficial en *Fanáticos del Sabor*.
 
@@ -1036,7 +1011,6 @@ Para registrarte y empezar a jugar necesito el folio de tu ticket 🎫
 
 ¡Mándamelo cuando lo tengas!`,
 
-  // ─── BIENVENIDA CONOCIDO (3 variantes) ───────────────────────────────────
   bienvenidaConocido: (username, rondasHoy) => {
     if (rondasHoy >= RONDAS_MAX) {
       return `¡Qué onda *${username}*! 🏆
@@ -1059,7 +1033,6 @@ Vas en *${rondasHoy}/${RONDAS_MAX}* rondas hoy. Te quedan *${RONDAS_MAX - rondas
 🎫 Manda tu siguiente folio, o escribe *PUNTOS* para ver tu posición.`;
   },
 
-  // v3.25: re-engagement (3+ días sin jugar)
   bienvenidaReEngagement: (username) =>
 `*${username}*, te extrañábamos 👀
 
@@ -1067,13 +1040,11 @@ La campaña sigue y hay *81 premios* en juego. Termina el *${CAMPAIGN_END_DATE}*
 
 🎫 Manda un folio para jugar, o escribe *PUNTOS* para ver tu posición.`,
 
-  // v3.25: bienvenida nuevo día (rondas se acaban de resetear)
   bienvenidaNuevoDia: (username) =>
 `☀️ ¡Hola, *${username}*!
 
 Tienes *${RONDAS_MAX} rondas nuevas* para hoy. Manda un folio cuando estés listo.`,
 
-  // ─── ATAJO DESDE WEB ─────────────────────────────────────────────────────
   atajoConocido: (username, rondasHoy) =>
 `Mándame el folio, *${username}* 🎫
 
@@ -1081,7 +1052,6 @@ ${rondasHoy < RONDAS_MAX
   ? `Llevas *${rondasHoy}/${RONDAS_MAX}* rondas hoy. Te quedan *${RONDAS_MAX - rondasHoy}*.`
   : `Ya jugaste tus *${RONDAS_MAX} rondas* de hoy 🏆\nMañana a *medianoche CDMX* se reinician.`}`,
 
-  // ─── FOLIO VÁLIDO — PIDE APODO ───────────────────────────────────────────
   folioOkPideNombre: (storeName, brand) => {
     const tienda = storeName ? `*${brand}* — ${storeName}` : "*Grupo Nutriza*";
     return `✅ Folio válido — compra en ${tienda} 🥑
@@ -1095,7 +1065,6 @@ Ejemplos: *Goleador26*, *NutriFan*, *MoyoQueen*, *ChilimRey*
 💡 Ese apodo te identifica toda la campaña. Elige bueno.`;
   },
 
-  // ─── USERNAME RECHAZADO — FORMATO ────────────────────────────────────────
   usernameInvalido: (razon, sugerencia) =>
 `Ese apodo no funciona 😅
 *${razon}*
@@ -1104,7 +1073,6 @@ ${sugerencia ? `¿Qué tal *${sugerencia}*? O escribe otro tú.` : "Escribe otro
 
 💡 Si quieres empezar de cero, escribe *reiniciar*.`,
 
-  // ─── USERNAME RECHAZADO — PROFANITY (caso Sheila) ────────────────────────
   usernameProfanity: (sugerencia) =>
 `Ese apodo no funciona 😅
 *Nuestro filtro lo marcó por error o por tener una palabra restringida.*
@@ -1113,7 +1081,6 @@ ${sugerencia ? `¿Qué tal *${sugerencia}*? O escribe otro.` : "Prueba con otro 
 
 💡 Si crees que es un error, escribe *SOPORTE* y dime tu nombre real para revisarlo.`,
 
-  // ─── USERNAME YA TOMADO ──────────────────────────────────────────────────
   usernameTomado: (sugerencia) =>
 `Ese apodo ya tiene dueño 😅
 
@@ -1123,7 +1090,6 @@ Cada apodo es único — primer fanático que lo elige se lo queda.
 
 🎯 Tip: agregar números o tu marca favorita ayuda — *NutriQueen*, *MoyoKing*, *ChilimChef*`,
 
-  // ─── REGISTRO COMPLETO (PRIMERA RONDA) ───────────────────────────────────
   registroCompleto: (username, magicLink, rondasHoy) =>
 `¡Listo, *${username}*! 🎉 Ya eres oficial *Fanático del Sabor*.
 
@@ -1134,7 +1100,6 @@ ${magicLink}
 
 Vas en la ronda *${rondasHoy}/${RONDAS_MAX}* de hoy.`,
 
-  // ─── FOLIO ADICIONAL (RONDAS 2+) ─────────────────────────────────────────
   folioAdicional: (username, rondaNum, magicLink) =>
 `✅ ¡Otra ronda, *${username}*!
 
@@ -1145,7 +1110,6 @@ ${rondaNum < RONDAS_MAX
   ? `Te quedan *${RONDAS_MAX - rondaNum} rondas* hoy. ¡A subir en el ranking!`
   : `🔥 Última ronda de hoy. Mañana a medianoche se reinician.`}`,
 
-  // ─── RE-ENVÍO DE MAGIC LINK (FIX v3.24 #1) ───────────────────────────────
   reenvioLink: (username, magicLink) =>
 `Aún no terminaste tu ronda actual, *${username || "Fanático"}* 🎮
 
@@ -1157,7 +1121,6 @@ ${magicLink}
 ⏱️ Tienes hasta *15 minutos* para terminar antes de que el folio se libere automático.
 🔄 Si recibiste varios links, *usa el más reciente* — los anteriores ya no funcionan.`,
 
-  // ─── RONDA COMPLETADA (FIX v3.24 #2, con acumulado en v3.25, con posición en v3.27) ─────────────
   rondaCompletada: (username, score, rondasHoy, puntosTotal, posicion, totalJugadores) => {
     let posLine = "";
     if (posicion && totalJugadores) {
@@ -1186,7 +1149,6 @@ Mañana a *medianoche CDMX* se reinician las rondas.
 💡 Comparte con tus amigos para que jueguen — pero *no compartas tus folios* (cada uno es único).`;
   },
 
-  // ─── MAX RONDAS (si manda folio nuevo después de 5) ──────────────────────
   maxRondas: (username) =>
 `Ya jugaste tus *${RONDAS_MAX} rondas* de hoy, *${username}* 🏆
 
@@ -1196,7 +1158,6 @@ Guarda ese folio — sigue válido por *${DIAS_VALIDEZ} días*. Mañana lo canje
 
 📊 Mira tu posición → *PUNTOS*`,
 
-  // ─── ERRORES DE FOLIO ────────────────────────────────────────────────────
   folioError: (error) => {
     const msgs = {
       formato:
@@ -1309,7 +1270,6 @@ La hora de tu celular no importa — siempre es hora México.
 
 💡 Guarda tu folio: sigue siendo válido por ${DIAS_VALIDEZ} días.`,
 
-      // Fallback si get_link falla en handler v3.24 #1
       session_active:
 `Aún no terminaste tu ronda actual 🎮
 
@@ -1326,7 +1286,6 @@ Cuando completes esa ronda, podrás canjear otro folio.
 💡 Si crees que algo no está bien, escribe *SOPORTE*.`;
   },
 
-  // ─── ERRORES TÉCNICOS ────────────────────────────────────────────────────
   errorRegistro: () =>
 `Tuve un problema técnico al registrarte 😞
 *No es culpa tuya.* Intenta de nuevo en 1-2 minutos.
@@ -1345,7 +1304,6 @@ Inténtalo en *30 segundos*. Tu folio no se ha perdido.
 
 (No me lo reenvíes, solo espera. Yo te respondo cuando se libere.)`,
 
-  // ─── AYUDA / COMANDOS ────────────────────────────────────────────────────
   ayuda: (u) =>
 `👋 Soy *Gol*${u ? `, tu apodo es *${u}*` : ""}.
 
@@ -1365,9 +1323,7 @@ Esto es lo que sé hacer:
 
 🆘 *SOPORTE* → Hablar con un humano de Grupo Nutriza.`,
 
-  // ─── PUNTOS (v3.27: muestra puntaje + posición DIRECTO en WA) ────────────
   puntos: (username, stats) => {
-    // Si no jugó nada todavía
     if (!stats || stats.puntos_total === 0 || !stats.posicion) {
       return `📊 Aún no tienes puntaje, *${username}*.
 
@@ -1397,7 +1353,6 @@ ${top3Lines}
 🎫 ¿Quieres subir? Manda otro folio para jugar.`;
   },
 
-  // ─── PREMIOS ─────────────────────────────────────────────────────────────
   premios: () =>
 `🏆 *81 premios en total* — Fanáticos del Sabor
 
@@ -1426,7 +1381,6 @@ ${top3Lines}
 
 📊 Ver mi posición → *PUNTOS*`,
 
-  // ─── TIENDAS ─────────────────────────────────────────────────────────────
   tiendas: () =>
 `🏪 *Las 4 marcas participantes:*
 
@@ -1439,7 +1393,6 @@ ${top3Lines}
 
 💡 Cada marca cuenta igual para tus puntos.`,
 
-  // ─── REGLAS ──────────────────────────────────────────────────────────────
   reglas: () =>
 `📋 *Las reglas en 30 segundos:*
 
@@ -1455,7 +1408,6 @@ ${top3Lines}
 
 💡 ¿Algo no te queda claro? Escribe *AYUDA* o *SOPORTE*.`,
 
-  // ─── DÓNDE ESTÁ EL FOLIO ─────────────────────────────────────────────────
   dondeFolio: () =>
 `📋 *Cómo encontrar tu folio:*
 
@@ -1473,13 +1425,11 @@ ${top3Lines}
 
 💡 Tip iOS/Android: mantén presionado el número en tu ticket fotografiado para copiarlo.`,
 
-  // ─── GRACIAS ─────────────────────────────────────────────────────────────
   gracias: (u) =>
 `¡Con gusto${u ? `, *${u}*` : ""}! ⚽
 
 💡 Si necesitas algo más, escribe *AYUDA*.`,
 
-  // ─── NO TEXTO (foto/audio/video) ─────────────────────────────────────────
   noTexto: () =>
 `😅 Soy un bot de texto — no leo fotos, audios ni videos.
 
@@ -1492,7 +1442,6 @@ ${top3Lines}
 ↳ Escribe *AYUDA* para ver todas mis opciones
 ↳ Escribe *SOPORTE* si necesitas hablar con un humano`,
 
-  // ─── PIDE FOLIO (genérico) ───────────────────────────────────────────────
   pedirFolio: () =>
 `Para continuar necesito tu *folio* 🎫
 
@@ -1506,7 +1455,6 @@ ${top3Lines}
 ¿Dudas? Escribe *FOLIO* para que te explique mejor.
 ¿Necesitas otra cosa? Escribe *AYUDA*.`,
 
-  // ─── SOPORTE (v3.25 nuevos) ──────────────────────────────────────────────
   soporteIntro: () =>
 `🆘 *Te pongo en contacto con un humano de Grupo Nutriza.*
 
@@ -1537,7 +1485,6 @@ Si cambias de opinión, escribe *SOPORTE* otra vez.
 
 ¿Otra cosa que necesites? Escribe *AYUDA*.`,
 
-  // ─── MI LINK (v3.27 nuevo) — reenvía último link activo ──────────────────
   miLink: (username, magicLink) =>
 `🔗 Aquí va tu link, *${username}*:
 
@@ -1552,7 +1499,6 @@ ${magicLink}
 
 📊 ¿Solo querías ver tu puntaje? Escribe *PUNTOS*.`,
 
-  // ─── OTRA RONDA (v3.27 nuevo) — hype + recordatorio del folio ────────────
   otraRonda: (username, rondasHoy) => {
     if (rondasHoy >= RONDAS_MAX) {
       return `Ya jugaste tus *${RONDAS_MAX} rondas* de hoy, *${username}* 🏆
@@ -1577,16 +1523,10 @@ function detectarIntencion(texto) {
   const inc = (...w) => w.some(p => t.includes(p));
   const num = texto.replace(/\s/g, "");
   if (/^84\d{10,20}$/.test(num)) return "folio_input";
-  // v3.27: atajo_codigo solo para los explícitos de "ingresar código" desde el sitio.
-  // OTRA RONDA y JUGAR OTRA ahora caen en el intent "otra_ronda" (más abajo) que
-  // manda hype + imagen del folio.
   if (inc("INGRESAR CÓDIGO","INGRESAR CODIGO","INGRESAR FOLIO","NUEVO FOLIO")) return "atajo_codigo";
-  // v3.25: SOPORTE antes que AYUDA (porque "AYUDA HUMANA" matchea ambos)
   if (inc("SOPORTE","AYUDA HUMANA","HABLAR CON ALGUIEN","HABLAR CON HUMANO","REPORTAR PROBLEMA","CONTACTAR HUMANO")) return "soporte";
-  // v3.27: MI LINK / LINK — reenvía el último magic link activo
   if (inc("MI LINK","MILINK","MI ENLACE","REENVIAR LINK","NUEVO LINK","DAME EL LINK","DAME EL ENLACE","NO ME LLEGA EL LINK","SE PERDIO EL LINK","ENVIA LINK")) return "mi_link";
   if (t === "LINK" || t === "ENLACE") return "mi_link";
-  // v3.27: OTRA RONDA — el usuario pide otra ronda (sin folio aún)
   if (inc("OTRA RONDA","QUIERO OTRA RONDA","NUEVA RONDA","JUGAR OTRA","JUGAR DE NUEVO","JUGAR OTRA VEZ","OTRA PARTIDA","UNA MÁS","UNA MAS","MAS RONDAS","MÁS RONDAS")) return "otra_ronda";
   if (t === "CANCELAR") return "cancelar";
   if (inc("AYUDA","HELP","OPCIONES","MENÚ","MENU","COMANDOS")) return "ayuda";
@@ -1609,7 +1549,6 @@ async function cargarSesion(tel, trace) {
   return null;
 }
 
-// v3.25: detecta días sin actividad para re-engagement
 function diasSinActividad(profile) {
   if (!profile || !profile.wa_ultimo_mensaje_at) return 0;
   const diff = Date.now() - new Date(profile.wa_ultimo_mensaje_at).getTime();
@@ -1672,7 +1611,6 @@ async function procesarMensajeCore(tel, texto, trace) {
     sbRpc("update_wa_profile", { p_phone: tel, p_user_id: userId, p_rondas_hoy: 0, p_fecha_reset: hoy }, trace).catch(() => {});
   }
 
-  // v3.25: SOPORTE — escape hatch humano
   if (intencion === "soporte") {
     metrics.cmd_soporte_invoked++;
     setSesion(tel, { fase: "esperando_soporte" });
@@ -1683,7 +1621,6 @@ async function procesarMensajeCore(tel, texto, trace) {
       setSesion(tel, { fase: username ? "activo" : "nuevo" });
       return enviar(tel, M.soporteCancelado(), trace);
     }
-    // Registrar ticket
     await bcSyncSoporte(tel, username, texto, "Otro").catch(() => {});
     setSesion(tel, { fase: username ? "activo" : "nuevo" });
     return enviar(tel, M.soporteConfirmado(), trace);
@@ -1695,15 +1632,13 @@ async function procesarMensajeCore(tel, texto, trace) {
     return enviar(tel, username ? M.bienvenidaConocido(username, rondasHoy) : M.bienvenidaNuevo(), trace);
   }
   if (intencion === "ayuda")       { metrics.cmd_ayuda_invoked++;   return enviar(tel, M.ayuda(username), trace); }
-  // v3.27: PUNTOS muestra puntaje + posición directo en WhatsApp
   if (intencion === "puntos")      {
     metrics.cmd_puntos_invoked++;
     if (!userId) {
-      // Usuario no registrado todavía
       return enviar(tel, M.bienvenidaNuevo(), trace);
     }
-    // Forzar sync de orfanos por si hay canjes sin sesión (legacy safety net)
-    sbRpc("auto_sync_all_orphans", {}, trace).catch(() => {});
+    // v3.33: REMOVIDO sbRpc("auto_sync_all_orphans") — generaba scores random
+    // para folios canjeados sin sesión (phantom scores bug). Ya neutralizada en Supabase.
     let statsRes = null;
     let rpcFailed = false;
     try {
@@ -1712,17 +1647,14 @@ async function procesarMensajeCore(tel, texto, trace) {
       rpcFailed = true;
       log.error(trace, `get_user_stats_for_bot failed: ${e.message}`);
     }
-    // RPC técnica falló → mensaje de error temporal (no "sin puntaje")
     if (rpcFailed) {
       return enviar(tel, M.errorEdgeFunction(), trace);
     }
-    // No registrado o sin puntaje → mensaje "aún no tienes puntaje"
     if (!statsRes || statsRes.found === false) {
       return enviar(tel, M.puntos(username || "Fanático", null), trace);
     }
     return enviar(tel, M.puntos(username || statsRes.username, statsRes), trace);
   }
-  // v3.27: MI LINK — reenvía el último link activo (si hay ronda abierta)
   if (intencion === "mi_link")     {
     metrics.cmd_mi_link_invoked++;
     if (!userId) {
@@ -1734,13 +1666,11 @@ async function procesarMensajeCore(tel, texto, trace) {
     }
     return enviar(tel, M.miLinkNoActivo(username), trace);
   }
-  // v3.27: OTRA RONDA — hype + recuerda dónde está el folio + imagen
   if (intencion === "otra_ronda")  {
     metrics.cmd_otra_ronda_invoked++;
     if (!userId) {
       return enviar(tel, M.bienvenidaNuevo(), trace);
     }
-    // Manda primero la imagen de dónde está el folio, luego el mensaje
     await enviarImagen(tel, IMG_FOLIO, "📋 Aquí está el folio en tu ticket — los 21 dígitos que empiezan con 84", trace);
     return enviar(tel, M.otraRonda(username || "Fanático", rondasHoy), trace);
   }
@@ -1756,7 +1686,6 @@ async function procesarMensajeCore(tel, texto, trace) {
 
   if (intencion === "saludo") {
     if (username) {
-      // v3.25: detectar re-engagement vs nuevo día vs normal
       if (diasSinJugar >= DIAS_RE_ENGAGEMENT) {
         metrics.reengagement_triggered++;
         return enviar(tel, M.bienvenidaReEngagement(username), trace);
@@ -1802,7 +1731,6 @@ async function procesarMensajeCore(tel, texto, trace) {
     if (regRes?.error === "inappropriate_username") {
       metrics.username_rejected_profanity++;
       log.info(trace, `Username rechazado por profanity: "${nombrePropuesto}"`);
-      // v3.25: usa M.usernameProfanity con sugerencia + escape a SOPORTE
       return enviar(tel, M.usernameProfanity(generarSugerencia(nombrePropuesto)), trace);
     }
     if (regRes?.error === "unauthorized") {
@@ -1931,7 +1859,6 @@ async function procesarMensajeCore(tel, texto, trace) {
       if (!claimRes?.success) {
         metrics.claim_fail++;
 
-        // FIX v3.24 #1 — Sesión activa: regenerar magic link
         if (claimRes?.error === 'session_active') {
           log.info(trace, `session_active detectado — regenerando magic link`);
           const linkRes = await waAuth("get_link", { phone: tel }, trace);
@@ -2217,8 +2144,7 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// FIX v3.24 #2 — Endpoint /game-complete (cierra el loop)
-// v3.25: ahora incluye puntos acumulados en el mensaje
+// /game-complete
 // ════════════════════════════════════════════════════════════════════════════
 app.post("/game-complete", async (req, res) => {
   const trace = newTrace();
@@ -2276,7 +2202,6 @@ app.post("/game-complete", async (req, res) => {
         fase: "activo",
       });
 
-      // v3.27: obtener posición en el leaderboard para incluirla en el mensaje
       let posicion = null;
       let totalJugadores = null;
       try {
@@ -2289,8 +2214,6 @@ app.post("/game-complete", async (req, res) => {
         log.warn(trace, `game-complete: stats fetch failed (no crítico): ${e.message}`);
       }
 
-      // v3.25: pasar puntosTotal al mensaje para mostrar acumulado
-      // v3.27: pasar también posición y total de jugadores
       const msg = rondasHoy >= RONDAS_MAX
         ? M.rondaCompletadaMaxDia(username, scoreNum, puntosTotal, posicion, totalJugadores)
         : M.rondaCompletada(username, scoreNum, rondasHoy, puntosTotal, posicion, totalJugadores);
@@ -2306,12 +2229,9 @@ app.post("/game-complete", async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// v3.25 — ENDPOINTS ADMIN PARA AIRTABLE
+// ENDPOINTS ADMIN
 // ════════════════════════════════════════════════════════════════════════════
 
-// POST /send-direct
-// Jonny manda mensaje custom a un usuario desde Airtable.
-// Body: { phone, message, secret }
 app.post("/send-direct", async (req, res) => {
   const trace = newTrace();
   metrics.admin_send_direct_received++;
@@ -2333,7 +2253,7 @@ app.post("/send-direct", async (req, res) => {
     return res.status(400).json({ error: "invalid_phone" });
   }
 
-  const msg = String(message).substring(0, 1500); // límite de WA template
+  const msg = String(message).substring(0, 1500);
   res.json({ ok: true });
 
   (async () => {
@@ -2347,8 +2267,6 @@ app.post("/send-direct", async (req, res) => {
   })();
 });
 
-// POST /admin-broadcast-trigger
-// Fuerza procesamiento inmediato de la cola de broadcasts (no espera el cron de 30s)
 app.post("/admin-broadcast-trigger", async (req, res) => {
   const trace = newTrace();
   const { secret } = req.body || {};
@@ -2366,9 +2284,6 @@ app.post("/admin-broadcast-trigger", async (req, res) => {
   });
 });
 
-// GET /admin-health-summary
-// Resumen compacto del estado del bot para Airtable Dashboard.
-// Pasar secret como query param o header (no es endpoint super sensible).
 app.get("/admin-health-summary", async (req, res) => {
   const secret = req.query.secret || req.headers['x-bot-secret'];
   if (!secret || secret !== BOT_SECRET) {
