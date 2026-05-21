@@ -1623,7 +1623,21 @@ function detectarIntencion(texto) {
 }
 
 async function cargarSesion(tel, trace) {
-  const data = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
+  // v3.35: retry interno para evitar marcar usuarios registrados como "nuevo" por timeout transitorio
+  let data = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
+  if (data === null) {
+    // sbRpc retorna null en error (timeout, 429, 500). Distinguir de found:false.
+    log.warn(trace, `cargarSesion: get_wa_profile retornó null — retry en 300ms`);
+    metrics.cargar_sesion_retry = (metrics.cargar_sesion_retry || 0) + 1;
+    await new Promise(r => setTimeout(r, 300));
+    data = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
+    if (data === null) {
+      // Sigue fallando. Retornar marker especial para que el caller no marque cargado=true.
+      metrics.cargar_sesion_fail = (metrics.cargar_sesion_fail || 0) + 1;
+      log.error(trace, `cargarSesion: get_wa_profile falló 2x para ${tel} — caller debe reintentar`);
+      return { __error: true };
+    }
+  }
   if (data && data.found) { metrics.get_profile_found++; return data; }
   metrics.get_profile_notfound++;
   return null;
@@ -1644,6 +1658,12 @@ async function procesarMensajeCore(tel, texto, trace) {
 
   if (!s.cargado) {
     const jugador = await cargarSesion(tel, trace);
+    // v3.35: si cargarSesion devolvió __error, no marcar cargado=true para reintentar en próximo mensaje
+    if (jugador && jugador.__error) {
+      log.warn(trace, `Sesión no cargada por error transitorio — respondiendo con mensaje genérico, próximo msg reintentará`);
+      metrics.session_load_deferred = (metrics.session_load_deferred || 0) + 1;
+      return enviar(tel, M.servidorSaturado(), trace);
+    }
     if (jugador) {
       if (jugador.wa_bloqueado === true) {
         metrics.user_blocked = (metrics.user_blocked || 0) + 1;
@@ -1661,12 +1681,13 @@ async function procesarMensajeCore(tel, texto, trace) {
         log.info(trace, `Sesión recuperada en esperando_soporte — manteniendo fase`);
         metrics.session_recovery_soporte = (metrics.session_recovery_soporte || 0) + 1;
       }
-      log.info(trace, `Sesión cargada de BD: fase=${recoveredPhase} username=${jugador.wa_username || 'null'}`);
+      log.info(trace, `Sesión cargada de BD: fase=${recoveredPhase} username=${jugador.wa_username || 'null'} registered=${jugador.wa_registered}`);
       setSesion(tel, {
         cargado:     true,
         fase:        recoveredPhase,
         username:    jugador.wa_username || jugador.username || null,
         userId:      jugador.user_id || null,
+        registered:  jugador.wa_registered === true,
         rondasHoy:   typeof jugador.wa_rondas_hoy === 'number' ? jugador.wa_rondas_hoy : 0,
         rondasTotal: typeof jugador.wa_rondas_total === 'number' ? jugador.wa_rondas_total : 0,
         fechaReset:  jugador.wa_fecha_reset || null,
@@ -1674,7 +1695,7 @@ async function procesarMensajeCore(tel, texto, trace) {
         diasSinJugar: diasSinActividad(jugador),
       });
     } else {
-      setSesion(tel, { cargado: true, fase: "nuevo" });
+      setSesion(tel, { cargado: true, fase: "nuevo", registered: false });
     }
     s = getSesion(tel);
   }
@@ -1920,14 +1941,18 @@ async function procesarMensajeCore(tel, texto, trace) {
     metrics.preview_ticket_ok++;
 
     // v3.35 BUG2 FIX: si caché perdió username/userId, recuperar de BD antes de pedir apodo
+    // Solo intentamos recover si el cache NO indica explícitamente que el usuario es nuevo
     let resolvedUsername = username;
     let resolvedUserId   = userId;
-    if (!resolvedUsername || !resolvedUserId) {
+    let recoveredProfile = null;
+    const cacheKnowsNotRegistered = s.cargado === true && s.registered === false;
+    if ((!resolvedUsername || !resolvedUserId) && !cacheKnowsNotRegistered) {
       const recoverProfile = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
       if (recoverProfile?.found && recoverProfile?.wa_registered) {
         resolvedUsername = recoverProfile.wa_username || null;
         resolvedUserId   = recoverProfile.user_id     || null;
         if (resolvedUsername && resolvedUserId) {
+          recoveredProfile = recoverProfile;
           setSesion(tel, {
             fase:        "activo",
             username:    resolvedUsername,
@@ -1946,7 +1971,8 @@ async function procesarMensajeCore(tel, texto, trace) {
       const username = resolvedUsername;
       const userId   = resolvedUserId;
       let localRondasTotal = s.rondasTotal || 0;
-      const freshProfile = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
+      // v3.35: si ya tenemos recoveredProfile, lo reutilizamos en lugar de hacer otra llamada
+      const freshProfile = recoveredProfile || await sbRpc("get_wa_profile", { p_phone: tel }, trace);
       if (freshProfile?.found) {
         const dbRondasHoy = freshProfile.wa_fecha_reset === hoy
           ? (freshProfile.wa_rondas_hoy || 0)
