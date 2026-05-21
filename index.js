@@ -1,9 +1,26 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRIZA — BOT v3.34 — PRODUCCIÓN                                        ║
-// ║  Fanáticos del Sabor · Grupo Nutriza · WhatsApp-native                       ║
+// ║  GOL NUTRISA — BOT v3.35 — PRODUCCIÓN                                        ║
+// ║  Fanáticos del Sabor · Grupo Nutrisa · WhatsApp-native                       ║
 // ║                                                                              ║
+// ║  v3.35: Caché stale-aware + retry robusto + ortografía Nutrisa               ║
 // ║  v3.34: Multi-réplica safe — dedupe distribuido + fase en BD                 ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
+//
+// ─── NUEVO EN v3.35 (21 may 2026 — bug fixes post-testing) ──────────────────
+// 1) cargarSesion ahora distingue error transitorio de "no encontrado":
+//    Antes: timeout en BD marcaba al usuario como "nuevo" permanentemente
+//    Ahora: retry interno + marker __error → caller reintenta próximo mensaje
+// 2) Caché stale-aware (3 min TTL):
+//    Antes: réplica A podía servir datos viejos cuando réplica B ya modificó BD
+//    Ahora: si caché >3min y fase segura, re-carga de BD
+// 3) Recovery de usuario registrado al recibir folio:
+//    Antes: si caché perdió username/userId, bot pedía apodo de nuevo
+//    Ahora: consulta BD antes de pedir apodo, recupera si está registrado
+// 4) claim_webhook_event con retry asimétrico:
+//    Antes: falla → ambas réplicas procesan → double message
+//    Ahora: retry con jitter, descarta tras 2 fallos
+// 5) Limpieza explícita de username/userId cuando BD dice no encontrado
+// 6) Ortografía: "Nutriza" → "Nutrisa" en textos visibles al usuario
 //
 // ─── NUEVO EN v3.34 (21 may 2026 — pre-launch hardening) ────────────────────
 // MULTI-RÉPLICA SAFE (Railway 2+ réplicas sin shared state):
@@ -217,6 +234,7 @@ const FETCH_TIMEOUT_MS     = 8000;
 const EDGE_FUNC_TIMEOUT_MS = 12000;
 
 const SESSION_TTL_MS       = 24 * 60 * 60 * 1000;
+const CACHE_STALE_MS       = 3 * 60 * 1000;  // v3.35: re-cargar de BD si caché no se ha tocado en 3 min
 const DEDUP_TTL_MS         =  5 * 60 * 1000;
 const DEDUP_MAX_ENTRIES    = 50_000;
 const USERLOCK_MAX_AGE_MS  = 60 * 1000;
@@ -1102,7 +1120,7 @@ ${rondasHoy < RONDAS_MAX
   : `Ya jugaste tus *${RONDAS_MAX} rondas* de hoy 🏆\nMañana a *medianoche CDMX* se reinician.`}`,
 
   folioOkPideNombre: (storeName, brand) => {
-    const tienda = storeName ? `*${brand}* — ${storeName}` : "*Grupo Nutriza*";
+    const tienda = storeName ? `*${brand}* — ${storeName}` : "*Grupo Nutrisa*";
     return `✅ Folio válido — compra en ${tienda} 🥑
 
 🎯 *Último paso:* elige tu *apodo* para el ranking.
@@ -1401,7 +1419,7 @@ Esto es lo que sé hacer:
 
 ⚠️ *No leo:* fotos, audios, videos, ni stickers.
 
-🆘 *SOPORTE* → Hablar con un humano de Grupo Nutriza.`,
+🆘 *SOPORTE* → Hablar con un humano de Grupo Nutrisa.`,
 
   puntos: (username, stats) => {
     if (!stats || stats.puntos_total === 0 || !stats.posicion) {
@@ -1536,7 +1554,7 @@ ${top3Lines}
 ¿Necesitas otra cosa? Escribe *AYUDA*.`,
 
   soporteIntro: () =>
-`🆘 *Te pongo en contacto con un humano de Grupo Nutriza.*
+`🆘 *Te pongo en contacto con un humano de Grupo Nutrisa.*
 
 Cuéntame en una sola frase qué necesitas:
 ↳ "Mi folio está dañado"
@@ -1554,7 +1572,7 @@ Cuéntame en una sola frase qué necesitas:
   soporteConfirmado: () =>
 `✅ *Reporte recibido.*
 
-Un humano de Grupo Nutriza revisará tu caso. Te contactamos pronto.
+Un humano de Grupo Nutrisa revisará tu caso. Te contactamos pronto.
 
 🎫 Mientras tanto puedes seguir jugando si tienes otro folio.`,
 
@@ -1656,15 +1674,32 @@ async function procesarMensajeCore(tel, texto, trace) {
   const intencion = detectarIntencion(texto);
   let s = getSesion(tel);
 
-  if (!s.cargado) {
-    const jugador = await cargarSesion(tel, trace);
-    // v3.35: si cargarSesion devolvió __error, no marcar cargado=true para reintentar en próximo mensaje
-    if (jugador && jugador.__error) {
-      log.warn(trace, `Sesión no cargada por error transitorio — respondiendo con mensaje genérico, próximo msg reintentará`);
-      metrics.session_load_deferred = (metrics.session_load_deferred || 0) + 1;
-      return enviar(tel, M.servidorSaturado(), trace);
+  // v3.35: Re-cargar de BD si caché está stale (>3 min sin actividad) Y la fase es segura
+  // Esto previene que una réplica use datos viejos cuando otra réplica modificó la BD
+  const cacheIsStale = s.cargado && s.lastSeen && 
+    (Date.now() - s.lastSeen > CACHE_STALE_MS) &&
+    (s.fase === "activo" || s.fase === "esperando_folio" || s.fase === "nuevo" || s.fase === "desconocido");
+  
+  if (!s.cargado || cacheIsStale) {
+    if (cacheIsStale) {
+      log.info(trace, `Caché stale (${Math.round((Date.now() - s.lastSeen)/1000)}s) — re-cargando de BD`);
+      metrics.cache_stale_reload = (metrics.cache_stale_reload || 0) + 1;
     }
-    if (jugador) {
+    const jugador = await cargarSesion(tel, trace);
+    // v3.35: si cargarSesion devolvió __error transitorio:
+    // - Si no había caché (first message): respondemos "saturado" y reintentamos próximo msg
+    // - Si caché era stale (refresh): mantenemos el caché viejo para no bloquear al usuario
+    if (jugador && jugador.__error) {
+      if (cacheIsStale) {
+        log.warn(trace, `BD falló en re-carga, manteniendo caché viejo`);
+        metrics.cache_stale_reload_failed = (metrics.cache_stale_reload_failed || 0) + 1;
+        setSesion(tel, { lastSeen: Date.now() }); // refresh lastSeen para evitar loop
+      } else {
+        log.warn(trace, `Sesión no cargada por error transitorio — respondiendo con mensaje genérico, próximo msg reintentará`);
+        metrics.session_load_deferred = (metrics.session_load_deferred || 0) + 1;
+        return enviar(tel, M.servidorSaturado(), trace);
+      }
+    } else if (jugador) {
       if (jugador.wa_bloqueado === true) {
         metrics.user_blocked = (metrics.user_blocked || 0) + 1;
         log.warn(trace, `🚫 Usuario bloqueado, ignorando: ${tel}`);
@@ -1695,7 +1730,14 @@ async function procesarMensajeCore(tel, texto, trace) {
         diasSinJugar: diasSinActividad(jugador),
       });
     } else {
-      setSesion(tel, { cargado: true, fase: "nuevo", registered: false });
+      // BD dice no encontrado: limpiar explícitamente username/userId del caché viejo
+      // (importante si el usuario fue borrado y el caché aún tenía sus datos)
+      setSesion(tel, { 
+        cargado: true, fase: "nuevo", 
+        username: null, userId: null, registered: false,
+        rondasHoy: 0, rondasTotal: 0, fechaReset: null,
+        pendingFolio: null
+      });
     }
     s = getSesion(tel);
   }
@@ -2034,7 +2076,7 @@ async function procesarMensajeCore(tel, texto, trace) {
 
     const storeInfo = getStoreFromFolio(folio);
     setSesion(tel, { fase: "esperando_username", pendingFolio: folio, intentos: 0 });
-    return enviar(tel, M.folioOkPideNombre(storeInfo?.name, storeInfo?.brand || "Grupo Nutriza"), trace);
+    return enviar(tel, M.folioOkPideNombre(storeInfo?.name, storeInfo?.brand || "Grupo Nutrisa"), trace);
   }
 
   if (s.fase === "activo" && username) {
