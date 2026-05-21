@@ -1,11 +1,22 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRIZA — BOT v3.33 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRIZA — BOT v3.34 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutriza · WhatsApp-native                       ║
 // ║                                                                              ║
-// ║  v3.33: PHANTOM SCORES bug fix + DIAS_VALIDEZ 3 dias                         ║
+// ║  v3.34: Multi-réplica safe — dedupe distribuido + fase en BD                 ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 //
-// ─── NUEVO EN v3.33 (20 may 2026 — pre-launch) ──────────────────────────────
+// ─── NUEVO EN v3.34 (21 may 2026 — pre-launch hardening) ────────────────────
+// MULTI-RÉPLICA SAFE (Railway 2+ réplicas sin shared state):
+// 1) Dedupe distribuido vía claim_webhook_event RPC (atómico en BD)
+//    Antes: dedupe en memoria local → posible doble-process en multi-réplica
+//    Ahora: PK en webhook_events.message_id garantiza idempotency
+// 2) wa_phase ahora se persiste a BD en cada cambio de fase
+//    Antes: solo en memoria → user perdía estado al cambiar de réplica
+//    Ahora: cualquier réplica recupera el estado real de BD
+// 3) Nuevo error 'rate_limited' manejado en M.folioError
+// 4) Nuevo error 'invalid_user_id' manejado (defensa en profundidad)
+//
+// ─── HEREDADO DE v3.33 (20 may 2026 — pre-launch) ───────────────────────────
 // 🚨 BUG CRÍTICO descubierto pre-launch:
 // La RPC auto_sync_all_orphans generaba scores random para folios canjeados
 // sin sesión real. Causaba el caso "Goleador" (puntos sin haber jugado).
@@ -92,7 +103,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.33";
+const VERSION         = "3.34";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -249,13 +260,51 @@ let atCircuitOpenedAt  = 0;
 let atConsecutiveFails = 0;
 
 const getSesion = (tel) => sesiones.get(tel) || { fase: "desconocido", intentos: 0 };
-const setSesion = (tel, data) => sesiones.set(tel, { ...getSesion(tel), ...data, lastSeen: Date.now() });
+
+// v3.34: setSesion ahora auto-persiste la fase a BD para multi-réplica safety.
+// Si se está cambiando la fase y tenemos userId, replicamos a BD (fire-and-forget).
+const setSesion = (tel, data) => {
+  const prev = getSesion(tel);
+  const newSession = { ...prev, ...data, lastSeen: Date.now() };
+  sesiones.set(tel, newSession);
+  // Persistir fase si cambió y hay userId
+  if (data.fase && data.fase !== prev.fase) {
+    const userId = data.userId || prev.userId;
+    if (userId) {
+      persistFase(tel, userId, data.fase, null);
+    }
+  }
+  return newSession;
+};
+
+// v3.34: Persist fase a BD (multi-réplica safe). Best-effort, no bloquea.
+function persistFase(tel, userId, newPhase, trace) {
+  if (!userId || !newPhase) return;
+  const persistedPhases = new Set([
+    "nuevo", "esperando_folio", "esperando_username", 
+    "activo", "esperando_soporte"
+  ]);
+  if (!persistedPhases.has(newPhase)) return;
+  sbRpc("update_wa_profile", {
+    p_phone: tel,
+    p_user_id: userId,
+    p_phase: newPhase
+  }, trace).catch(() => {
+    metrics.persist_fase_fail = (metrics.persist_fase_fail || 0) + 1;
+  });
+}
 
 // ─── MÉTRICAS ───────────────────────────────────────────────────────────────
 const metrics = {
   startup_at:           new Date().toISOString(),
   webhook_total:        0,
   webhook_dedup_hit:    0,
+  webhook_dedup_distributed: 0,   // v3.34
+  webhook_dedup_fail:   0,        // v3.34
+  persist_fase_fail:    0,        // v3.34
+  session_recovery_lost_folio: 0, // v3.34
+  session_recovery_soporte: 0,    // v3.34
+  user_blocked:         0,        // v3.34
   webhook_silent_type:  0,
   webhook_non_text:     0,
   webhook_text:         0,
@@ -1280,6 +1329,37 @@ Cuando completes esa ronda, podrás canjear otro folio.
 (Si no completas en 15 minutos, el folio se libera automático.)
 
 💡 ¿Perdiste el link? Mándame de nuevo el folio que ya canjeaste para reenviártelo.`,
+
+      rate_limited:
+`Estás mandando folios muy rápido 🛑
+
+Espera *1 minuto* y vuelve a intentar.
+
+💡 Si crees que es un error, escribe *SOPORTE*.`,
+
+      invalid_user_id:
+`Tuve un problema técnico con tu cuenta 😞
+*No es culpa tuya.* Escribe *REINICIAR* para empezar de cero.
+
+Si el problema persiste, escribe *SOPORTE*.`,
+
+      missing_user_id:
+`Tuve un problema técnico con tu cuenta 😞
+*No es culpa tuya.* Escribe *REINICIAR* para empezar de cero.
+
+Si el problema persiste, escribe *SOPORTE*.`,
+
+      unauthorized:
+`Hubo un problema con tu sesión 😞
+Escribe *REINICIAR* para empezar de cero.
+
+Si el problema persiste, escribe *SOPORTE*.`,
+
+      internal_error:
+`Tuvimos un problema técnico 😞
+*No es culpa tuya.* Inténtalo en 1-2 minutos.
+
+Si el problema persiste, escribe *SOPORTE*.`,
     };
     return msgs[error] || `No pude validar ese folio. ¿Revisas que esté completo y mándamelo de nuevo?
 
@@ -1573,9 +1653,15 @@ async function procesarMensajeCore(tel, texto, trace) {
 
       let recoveredPhase = jugador.wa_phase || "nuevo";
       if (recoveredPhase === "esperando_username") {
-        log.warn(trace, `Sesión recuperada en esperando_username sin pendingFolio — reset a esperando_folio`);
+        log.warn(trace, `Sesión recuperada en esperando_username — pendingFolio perdido, reset a esperando_folio`);
+        metrics.session_recovery_lost_folio = (metrics.session_recovery_lost_folio || 0) + 1;
         recoveredPhase = "esperando_folio";
       }
+      if (recoveredPhase === "esperando_soporte") {
+        log.info(trace, `Sesión recuperada en esperando_soporte — manteniendo fase`);
+        metrics.session_recovery_soporte = (metrics.session_recovery_soporte || 0) + 1;
+      }
+      log.info(trace, `Sesión cargada de BD: fase=${recoveredPhase} username=${jugador.wa_username || 'null'}`);
       setSesion(tel, {
         cargado:     true,
         fase:        recoveredPhase,
@@ -2105,10 +2191,37 @@ app.post("/webhook", async (req, res) => {
           log.info(trace, `🤐 [${msg.from}] ${msg.type} ignorado`);
           continue;
         }
+
+        // v3.34: Dedupe distribuido (multi-réplica safe)
+        // Capa 1: memoria local (fast path, ~0ms)
         if (msg.id && processedMsgs.has(msg.id)) {
           metrics.webhook_dedup_hit++;
-          log.info(trace, `⏭️ Dup msg ${msg.id}`);
+          log.info(trace, `⏭️ Dup msg ${msg.id} (local cache)`);
           continue;
+        }
+
+        // Capa 2: BD (cross-replica, atómico via PK)
+        if (msg.id) {
+          try {
+            const claimed = await sbRpc("claim_webhook_event", {
+              p_message_id: msg.id,
+              p_from_phone: msg.from || null,
+              p_event_type: msg.type || 'unknown',
+              p_payload: { text: msg.text?.body?.substring(0, 200) || null }
+            }, trace);
+
+            if (claimed && claimed.claimed === false) {
+              metrics.webhook_dedup_hit++;
+              metrics.webhook_dedup_distributed = (metrics.webhook_dedup_distributed || 0) + 1;
+              log.info(trace, `⏭️ Dup msg ${msg.id} (distributed)`);
+              continue;
+            }
+          } catch (e) {
+            // Si claim_webhook_event falla, no bloqueamos el procesamiento.
+            // El dedupe en memoria local sigue funcionando como fallback.
+            metrics.webhook_dedup_fail = (metrics.webhook_dedup_fail || 0) + 1;
+            log.warn(trace, `claim_webhook_event fail (continuing): ${e.message}`);
+          }
         }
         addToProcessedMsgs(msg.id);
 
