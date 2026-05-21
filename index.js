@@ -103,7 +103,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.34";
+const VERSION         = "3.35";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -1919,7 +1919,32 @@ async function procesarMensajeCore(tel, texto, trace) {
     }
     metrics.preview_ticket_ok++;
 
-    if (username && userId) {
+    // v3.35 BUG2 FIX: si caché perdió username/userId, recuperar de BD antes de pedir apodo
+    let resolvedUsername = username;
+    let resolvedUserId   = userId;
+    if (!resolvedUsername || !resolvedUserId) {
+      const recoverProfile = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
+      if (recoverProfile?.found && recoverProfile?.wa_registered) {
+        resolvedUsername = recoverProfile.wa_username || null;
+        resolvedUserId   = recoverProfile.user_id     || null;
+        if (resolvedUsername && resolvedUserId) {
+          setSesion(tel, {
+            fase:        "activo",
+            username:    resolvedUsername,
+            userId:      resolvedUserId,
+            rondasHoy:   recoverProfile.wa_fecha_reset === hoy ? (recoverProfile.wa_rondas_hoy || 0) : 0,
+            rondasTotal: recoverProfile.wa_rondas_total || 0,
+            fechaReset:  recoverProfile.wa_fecha_reset || null,
+          });
+          log.info(trace, `BUG2-FIX: usuario registrado recuperado de BD: ${resolvedUsername}`);
+          metrics.session_recovery_registered = (metrics.session_recovery_registered || 0) + 1;
+        }
+      }
+    }
+
+    if (resolvedUsername && resolvedUserId) {
+      const username = resolvedUsername;
+      const userId   = resolvedUserId;
       let localRondasTotal = s.rondasTotal || 0;
       const freshProfile = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
       if (freshProfile?.found) {
@@ -2217,10 +2242,29 @@ app.post("/webhook", async (req, res) => {
               continue;
             }
           } catch (e) {
-            // Si claim_webhook_event falla, no bloqueamos el procesamiento.
-            // El dedupe en memoria local sigue funcionando como fallback.
+            // v3.35 BUG3 FIX: si claim falla, reintentar una vez con delay antes de procesar
+            // Esto reduce la ventana de race condition entre réplicas
             metrics.webhook_dedup_fail = (metrics.webhook_dedup_fail || 0) + 1;
-            log.warn(trace, `claim_webhook_event fail (continuing): ${e.message}`);
+            log.warn(trace, `claim_webhook_event fail (retrying): ${e.message}`);
+            try {
+              await new Promise(r => setTimeout(r, 200 + Math.random() * 150));
+              const retry = await sbRpc("claim_webhook_event", {
+                p_message_id: msg.id,
+                p_from_phone: msg.from || null,
+                p_event_type: msg.type || 'unknown',
+                p_payload: { text: msg.text?.body?.substring(0, 200) || null }
+              }, trace);
+              if (retry && retry.claimed === false) {
+                metrics.webhook_dedup_distributed = (metrics.webhook_dedup_distributed || 0) + 1;
+                log.info(trace, `⏭️ Dup msg ${msg.id} (distributed retry)`);
+                continue;
+              }
+            } catch (e2) {
+              // Segundo fallo: descartar para evitar double-processing
+              metrics.webhook_dedup_fail_skip = (metrics.webhook_dedup_fail_skip || 0) + 1;
+              log.warn(trace, `claim_webhook_event fail x2 — descartando msg ${msg.id}: ${e2.message}`);
+              continue;
+            }
           }
         }
         addToProcessedMsgs(msg.id);
