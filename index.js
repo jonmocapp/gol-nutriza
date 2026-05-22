@@ -2427,10 +2427,22 @@ app.post("/webhook", async (req, res) => {
         const texto = msg.text.body.trim();
         log.info(trace, `📩 [${tel}] "${texto.substring(0, 40)}" fase=${getSesion(tel).fase}`);
 
-        procesarMensaje(tel, texto, trace).catch(e => {
+        procesarMensaje(tel, texto, trace).then(() => {
+          // v3.36: marcar webhook como procesado para que cleanup_old_webhook_events funcione
+          if (msg.id) {
+            sbRpc("mark_webhook_processed", { p_message_id: msg.id, p_error_msg: null }, trace).catch(err => {
+              metrics.mark_processed_fail = (metrics.mark_processed_fail || 0) + 1;
+              log.warn(trace, `mark_webhook_processed fail: ${err.message}`);
+            });
+          }
+        }).catch(e => {
           metrics.msg_errors++;
           recordError("procesarMensaje", e);
           log.error(trace, "procesarMensaje top:", e);
+          // Marcar como procesado con error para no reintentar y no ensuciar la tabla
+          if (msg.id) {
+            sbRpc("mark_webhook_processed", { p_message_id: msg.id, p_error_msg: String(e.message || e).substring(0, 500) }, trace).catch(() => {});
+          }
         });
       }
     }
