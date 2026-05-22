@@ -1,10 +1,21 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRISA — BOT v3.35 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRISA — BOT v3.36 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutrisa · WhatsApp-native                       ║
 // ║                                                                              ║
+// ║  v3.36: pendingFolio en BD + regex 21 dígitos estricto                       ║
 // ║  v3.35: Caché stale-aware + retry robusto + ortografía Nutrisa               ║
 // ║  v3.34: Multi-réplica safe — dedupe distribuido + fase en BD                 ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
+//
+// ─── NUEVO EN v3.36 (21 may 2026 — fixes críticos pre-launch) ───────────────
+// 1) pendingFolio persistido en BD (tabla wa_pending_registrations):
+//    Antes: si user mandaba folio y luego username en réplica distinta, el
+//    pendingFolio se perdía → bot pedía folio de nuevo en lugar de procesar el apodo
+//    Ahora: cualquier réplica recupera el pendingFolio de BD y completa el registro
+// 2) Regex de folio estricta a 21 dígitos exactos:
+//    Antes: si user tipeaba 22 dígitos, bot truncaba silenciosamente al primer 21
+//    (dos inputs distintos resolvían al mismo folio)
+//    Ahora: 22 dígitos = formato inválido → user debe verificar
 //
 // ─── NUEVO EN v3.35 (21 may 2026 — bug fixes post-testing) ──────────────────
 // 1) cargarSesion ahora distingue error transitorio de "no encontrado":
@@ -120,7 +131,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.35";
+const VERSION         = "3.36";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -682,24 +693,33 @@ function getStoreFromFolio(folio) {
 
 // ─── VALIDADOR FOLIO ────────────────────────────────────────────────────────
 function validarFormatoFolioLocal(texto) {
-  const match = (texto || '').match(/\d{21,22}/);
+  // v3.36: estricto en exactamente 21 dígitos. Nunca truncar.
+  const match = (texto || '').match(/\d{21}/);
   if (match) {
     const f = match[0];
+    // Verificar que NO sea parte de un número más largo
+    const idx = (texto || '').indexOf(f);
+    const before = idx > 0 ? texto[idx - 1] : '';
+    const after = texto[idx + 21] || '';
+    if (/\d/.test(before) || /\d/.test(after)) {
+      metrics.folio_wrong_length = (metrics.folio_wrong_length || 0) + 1;
+      return { ok: false, error: "formato" };
+    }
     if (!f.startsWith("84")) {
       const prefix = f.substring(0, 2);
       metrics[`folio_wrong_prefix_${prefix}`] = (metrics[`folio_wrong_prefix_${prefix}`] || 0) + 1;
       return { ok: false, error: "prefijo" };
     }
-    return { ok: true, folio: f.length === 22 ? f.substring(0, 21) : f };
+    return { ok: true, folio: f };
   }
   const onlyDigits = (texto || '').replace(/[^0-9]/g, "");
-  if (/^\d{21,22}$/.test(onlyDigits)) {
+  if (/^\d{21}$/.test(onlyDigits)) {
     if (!onlyDigits.startsWith("84")) {
       const prefix = onlyDigits.substring(0, 2);
       metrics[`folio_wrong_prefix_${prefix}`] = (metrics[`folio_wrong_prefix_${prefix}`] || 0) + 1;
       return { ok: false, error: "prefijo" };
     }
-    return { ok: true, folio: onlyDigits.length === 22 ? onlyDigits.substring(0, 21) : onlyDigits };
+    return { ok: true, folio: onlyDigits };
   }
   return { ok: false, error: "formato" };
 }
@@ -1620,7 +1640,7 @@ function detectarIntencion(texto) {
   const t = texto.toUpperCase().trim();
   const inc = (...w) => w.some(p => t.includes(p));
   const num = texto.replace(/\s/g, "");
-  if (/^84\d{10,20}$/.test(num)) return "folio_input";
+  if (/^84\d{19}$/.test(num)) return "folio_input";
   if (inc("INGRESAR CÓDIGO","INGRESAR CODIGO","INGRESAR FOLIO","NUEVO FOLIO")) return "atajo_codigo";
   if (inc("SOPORTE","AYUDA HUMANA","HABLAR CON ALGUIEN","HABLAR CON HUMANO","REPORTAR PROBLEMA","CONTACTAR HUMANO")) return "soporte";
   if (inc("MI LINK","MILINK","MI ENLACE","REENVIAR LINK","NUEVO LINK","DAME EL LINK","DAME EL ENLACE","NO ME LLEGA EL LINK","SE PERDIO EL LINK","ENVIA LINK")) return "mi_link";
@@ -1707,10 +1727,20 @@ async function procesarMensajeCore(tel, texto, trace) {
       }
 
       let recoveredPhase = jugador.wa_phase || "nuevo";
+      let recoveredPendingFolio = null;
+      
+      // v3.36: si fase es esperando_username, intentar recuperar pendingFolio de BD
       if (recoveredPhase === "esperando_username") {
-        log.warn(trace, `Sesión recuperada en esperando_username — pendingFolio perdido, reset a esperando_folio`);
-        metrics.session_recovery_lost_folio = (metrics.session_recovery_lost_folio || 0) + 1;
-        recoveredPhase = "esperando_folio";
+        const pendingRes = await sbRpc("get_pending_registration", { p_phone: tel }, trace);
+        if (pendingRes?.found && pendingRes?.pending_folio) {
+          recoveredPendingFolio = pendingRes.pending_folio;
+          log.info(trace, `Sesión recuperada en esperando_username con pendingFolio=${recoveredPendingFolio}`);
+          metrics.session_recovery_with_folio = (metrics.session_recovery_with_folio || 0) + 1;
+        } else {
+          log.warn(trace, `Sesión recuperada en esperando_username — pendingFolio no encontrado en BD, reset a esperando_folio`);
+          metrics.session_recovery_lost_folio = (metrics.session_recovery_lost_folio || 0) + 1;
+          recoveredPhase = "esperando_folio";
+        }
       }
       if (recoveredPhase === "esperando_soporte") {
         log.info(trace, `Sesión recuperada en esperando_soporte — manteniendo fase`);
@@ -1723,6 +1753,7 @@ async function procesarMensajeCore(tel, texto, trace) {
         username:    jugador.wa_username || jugador.username || null,
         userId:      jugador.user_id || null,
         registered:  jugador.wa_registered === true,
+        pendingFolio: recoveredPendingFolio,
         rondasHoy:   typeof jugador.wa_rondas_hoy === 'number' ? jugador.wa_rondas_hoy : 0,
         rondasTotal: typeof jugador.wa_rondas_total === 'number' ? jugador.wa_rondas_total : 0,
         fechaReset:  jugador.wa_fecha_reset || null,
@@ -1730,14 +1761,26 @@ async function procesarMensajeCore(tel, texto, trace) {
         diasSinJugar: diasSinActividad(jugador),
       });
     } else {
-      // BD dice no encontrado: limpiar explícitamente username/userId del caché viejo
-      // (importante si el usuario fue borrado y el caché aún tenía sus datos)
-      setSesion(tel, { 
-        cargado: true, fase: "nuevo", 
-        username: null, userId: null, registered: false,
-        rondasHoy: 0, rondasTotal: 0, fechaReset: null,
-        pendingFolio: null
-      });
+      // v3.36: si no hay profile, ver si hay un registro pendiente (user mandó folio pero aún no apodo)
+      const pendingRes = await sbRpc("get_pending_registration", { p_phone: tel }, trace);
+      if (pendingRes?.found && pendingRes?.pending_folio) {
+        log.info(trace, `No hay profile pero sí pendingFolio=${pendingRes.pending_folio} — fase=esperando_username`);
+        metrics.session_recovery_with_folio = (metrics.session_recovery_with_folio || 0) + 1;
+        setSesion(tel, {
+          cargado: true, fase: "esperando_username",
+          username: null, userId: null, registered: false,
+          pendingFolio: pendingRes.pending_folio,
+          rondasHoy: 0, rondasTotal: 0, fechaReset: null
+        });
+      } else {
+        // BD dice no encontrado: limpiar explícitamente username/userId del caché viejo
+        setSesion(tel, { 
+          cargado: true, fase: "nuevo", 
+          username: null, userId: null, registered: false,
+          rondasHoy: 0, rondasTotal: 0, fechaReset: null,
+          pendingFolio: null
+        });
+      }
     }
     s = getSesion(tel);
   }
@@ -1778,6 +1821,7 @@ async function procesarMensajeCore(tel, texto, trace) {
   if (intencion === "reiniciar") {
     metrics.cmd_reiniciar_invoked++;
     setSesion(tel, { fase: username ? "activo" : "nuevo", intentos: 0, pendingFolio: null });
+    sbRpc("clear_pending_registration", { p_phone: tel }, trace).catch(() => {});
     return enviar(tel, username ? M.bienvenidaConocido(username, rondasHoy) : M.bienvenidaNuevo(), trace);
   }
   if (intencion === "ayuda")       { metrics.cmd_ayuda_invoked++;   return enviar(tel, M.ayuda(username), trace); }
@@ -1873,6 +1917,24 @@ async function procesarMensajeCore(tel, texto, trace) {
     const val = validarUsername(nombrePropuesto);
     if (!val.valido) return enviar(tel, M.usernameInvalido(val.razon, val.sugerencia), trace);
 
+    // v3.36 BUG FIX: verificar pendingFolio ANTES del register para evitar usuarios fantasma
+    // Si no hay en memoria, intentar recuperar de BD una última vez
+    let prefolioVerify = s.pendingFolio;
+    if (!prefolioVerify) {
+      const pendingRes = await sbRpc("get_pending_registration", { p_phone: tel }, trace);
+      if (pendingRes?.found && pendingRes?.pending_folio) {
+        prefolioVerify = pendingRes.pending_folio;
+        setSesion(tel, { pendingFolio: prefolioVerify });
+        log.info(trace, `pendingFolio recuperado de BD justo antes de register: ${prefolioVerify}`);
+      }
+    }
+    if (!prefolioVerify) {
+      log.warn(trace, `BUG GUARD: register intentado sin pendingFolio — usuario perdió el estado`);
+      metrics.register_aborted_no_folio = (metrics.register_aborted_no_folio || 0) + 1;
+      setSesion(tel, { fase: "esperando_folio", pendingFolio: null });
+      return enviar(tel, `Algo se desincronizó 😅 Mándame tu folio otra vez 🎫`, trace);
+    }
+
     log.info(trace, `→ register username="${nombrePropuesto}" phone=${tel}`);
     const regRes = await waAuth("register", { phone: tel, username: nombrePropuesto }, trace);
 
@@ -1915,6 +1977,7 @@ async function procesarMensajeCore(tel, texto, trace) {
       metrics.claim_fail++;
       log.error(trace, "Claim fallido tras register:", JSON.stringify(claimRes));
       setSesion(tel, { fase: "activo", username: finalUsername, userId: newUserId, pendingFolio: null });
+      sbRpc("clear_pending_registration", { p_phone: tel }, trace).catch(() => {});
       return enviar(tel, M.folioError(claimRes?.error || "already_used"), trace);
     }
     metrics.claim_ok++;
@@ -1933,6 +1996,8 @@ async function procesarMensajeCore(tel, texto, trace) {
       rondasHoy: completedToday, rondasTotal: totalCompleted, fechaReset: hoy,
       pendingFolio: null, intentos: 0,
     });
+    // v3.36: limpiar pending_registration en BD
+    sbRpc("clear_pending_registration", { p_phone: tel }, trace).catch(() => {});
 
     const storeInfoFirst = getStoreFromFolio(pendFolio);
 
@@ -2076,6 +2141,10 @@ async function procesarMensajeCore(tel, texto, trace) {
 
     const storeInfo = getStoreFromFolio(folio);
     setSesion(tel, { fase: "esperando_username", pendingFolio: folio, intentos: 0 });
+    // v3.36: persistir pendingFolio en BD para que sobreviva cambio de réplica
+    sbRpc("set_pending_registration", { p_phone: tel, p_folio: folio }, trace).catch(() => {
+      metrics.pending_reg_persist_fail = (metrics.pending_reg_persist_fail || 0) + 1;
+    });
     return enviar(tel, M.folioOkPideNombre(storeInfo?.name, storeInfo?.brand || "Grupo Nutrisa"), trace);
   }
 
