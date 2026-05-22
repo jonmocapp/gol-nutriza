@@ -1,11 +1,39 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRISA — BOT v3.36 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRISA — BOT v3.38 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutrisa · WhatsApp-native                       ║
 // ║                                                                              ║
+// ║  v3.38: Tono formal, ortografía revisada, instrucciones claras               ║
+// ║  v3.37: Last-resort BD recovery en handlers + UX continuidad                 ║
 // ║  v3.36: pendingFolio en BD + regex 21 dígitos estricto                       ║
 // ║  v3.35: Caché stale-aware + retry robusto + ortografía Nutrisa               ║
 // ║  v3.34: Multi-réplica safe — dedupe distribuido + fase en BD                 ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
+//
+// ─── NUEVO EN v3.38 (22 may 2026 — copy review) ─────────────────────────────
+// Pasada completa a todos los mensajes para tono más formal y profesional:
+// - Eliminado slang: "qué onda" → "hola", "va" → "perfecto", "cáele" → "compra"
+// - Eliminado "ahorita" → "ahora", "manda" → "envía"
+// - Comandos siempre en MAYÚSCULAS (REINICIAR, CANCELAR, SOPORTE, etc)
+// - Reducidos emojis decorativos, mantenidos los funcionales (🥇🥈🥉)
+// - Ortografía revisada en todos los mensajes
+// - Instrucciones más claras dirigiendo al protocolo (palabras completas)
+//
+// ─── NUEVO EN v3.37 (22 may 2026 — UX continuidad + soporte safety) ─────────
+// 1) recoverFromDB helper: si llega un comando (otra_ronda/saludo/puntos/mi_link)
+//    y el cache no tiene userId pero la BD dice wa_registered=true, recupera al
+//    vuelo y procesa normalmente. Antes: respondía bienvenidaNuevo (mensaje largo
+//    completo) tratando al usuario como nuevo.
+// 2) Mensajes de fallback más cortos cuando user no está registrado:
+//    Antes: bienvenidaNuevo completo (10+ líneas)
+//    Ahora: "Para empezar mándame tu folio (21 dígitos que empiezan con 84) 🎫"
+// 3) Removido envío de imagen del folio en handler de "otra_ronda" — usuario ya
+//    sabe dónde está, no necesita re-explicación
+// 4) Soporte early-exit: si user está en fase esperando_soporte y manda un
+//    folio/reiniciar/ayuda/puntos/mi_link/otra_ronda/saludo, el bot sale del
+//    modo soporte automáticamente y procesa el comando. Antes: enviaba el folio
+//    a Airtable como "reporte de soporte" (race condition entre réplicas).
+// 5) esperando_soporte ahora incluida en cache_stale_reload — si una réplica
+//    tiene esa fase >3min, recarga de BD para detectar cambios cross-réplica.
 //
 // ─── NUEVO EN v3.36 (21 may 2026 — fixes críticos pre-launch) ───────────────
 // 1) pendingFolio persistido en BD (tabla wa_pending_registrations):
@@ -131,7 +159,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.36";
+const VERSION         = "3.38";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -1085,369 +1113,369 @@ function atLog(tel, mensaje, direccion, fase) {
 
 const M = {
   bienvenidaNuevo: () =>
-`¡Hola! ⚽ Soy *Gol*, tu guía oficial en *Fanáticos del Sabor*.
+`Hola, soy *Gol*, tu guía oficial en *Fanáticos del Sabor*.
 
-Para registrarte y empezar a jugar necesito el folio de tu ticket 🎫
+Para registrarte y comenzar a jugar necesito el folio de tu ticket.
 
-📍 *Dónde encontrarlo:*
-↳ Está en la parte de arriba del ticket
+*Dónde encontrarlo:*
+↳ Está en la parte superior del ticket
 ↳ Empieza con *84* y tiene *21 dígitos*
-↳ Cópialo directo del ticket (no me mandes la foto, solo los números)
+↳ Cópialo directo del ticket (envía solo los números, no la fotografía)
 
-⏱️ *Importante:* tu ticket debe ser de los últimos *${DIAS_VALIDEZ} días*.
+*Importante:* tu ticket debe ser de los últimos *${DIAS_VALIDEZ} días*.
 
-¡Mándamelo cuando lo tengas!`,
+Envíalo cuando lo tengas.`,
 
   bienvenidaConocido: (username, rondasHoy) => {
     if (rondasHoy >= RONDAS_MAX) {
-      return `¡Qué onda *${username}*! 🏆
+      return `Hola, *${username}*.
 
-Ya jugaste tus *${RONDAS_MAX} rondas* de hoy. Se reinician mañana a *medianoche CDMX*.
+Ya completaste tus *${RONDAS_MAX} rondas* de hoy. Se reinician mañana a *medianoche (hora CDMX)*.
 
-Mira tu posición → *PUNTOS*`;
+Para ver tu posición, escribe *PUNTOS*.`;
     }
     if (rondasHoy === 0) {
-      return `¡Qué onda *${username}*! 👋
+      return `Hola, *${username}*.
 
 Tienes *${RONDAS_MAX} rondas* disponibles hoy.
 
-🎫 Manda un folio para empezar, o escribe *PUNTOS* para ver tu posición.`;
+Envía un folio para comenzar, o escribe *PUNTOS* para ver tu posición.`;
     }
-    return `¡Qué onda *${username}*! 👋
+    return `Hola, *${username}*.
 
-Vas en *${rondasHoy}/${RONDAS_MAX}* rondas hoy. Te quedan *${RONDAS_MAX - rondasHoy}*.
+Llevas *${rondasHoy}/${RONDAS_MAX}* rondas hoy. Te quedan *${RONDAS_MAX - rondasHoy}*.
 
-🎫 Manda tu siguiente folio, o escribe *PUNTOS* para ver tu posición.`;
+Envía tu siguiente folio, o escribe *PUNTOS* para ver tu posición.`;
   },
 
   bienvenidaReEngagement: (username) =>
-`*${username}*, te extrañábamos 👀
+`*${username}*, queremos verte de regreso.
 
-La campaña sigue y hay *81 premios* en juego. Termina el *${CAMPAIGN_END_DATE}*.
+La campaña sigue activa y hay *81 premios* en juego. Termina el *${CAMPAIGN_END_DATE}*.
 
-🎫 Manda un folio para jugar, o escribe *PUNTOS* para ver tu posición.`,
+Envía un folio para jugar, o escribe *PUNTOS* para ver tu posición.`,
 
   bienvenidaNuevoDia: (username) =>
-`☀️ ¡Hola, *${username}*!
+`Hola, *${username}*.
 
-Tienes *${RONDAS_MAX} rondas nuevas* para hoy. Manda un folio cuando estés listo.`,
+Tienes *${RONDAS_MAX} rondas nuevas* para hoy. Envía un folio cuando estés listo.`,
 
   atajoConocido: (username, rondasHoy) =>
-`Mándame el folio, *${username}* 🎫
+`Envíame el folio, *${username}*.
 
 ${rondasHoy < RONDAS_MAX
   ? `Llevas *${rondasHoy}/${RONDAS_MAX}* rondas hoy. Te quedan *${RONDAS_MAX - rondasHoy}*.`
-  : `Ya jugaste tus *${RONDAS_MAX} rondas* de hoy 🏆\nMañana a *medianoche CDMX* se reinician.`}`,
+  : `Ya completaste tus *${RONDAS_MAX} rondas* de hoy.\nSe reinician mañana a *medianoche (hora CDMX)*.`}`,
 
   folioOkPideNombre: (storeName, brand) => {
     const tienda = storeName ? `*${brand}* — ${storeName}` : "*Grupo Nutrisa*";
-    return `✅ Folio válido — compra en ${tienda} 🥑
+    return `Folio válido. Compra realizada en ${tienda}.
 
-🎯 *Último paso:* elige tu *apodo* para el ranking.
+*Último paso:* elige tu *apodo* para el ranking.
 
-Reglas: 3-20 caracteres, sin espacios, sin acentos. Solo letras, números y _.
+Reglas: 3 a 20 caracteres, sin espacios y sin acentos. Solo letras, números y guion bajo.
 
-Ejemplos: *Goleador26*, *NutriFan*, *MoyoQueen*, *ChilimRey*
+Ejemplos: *Goleador26*, *NutriFan*, *MoyoQueen*, *ChilimRey*.
 
-💡 Ese apodo te identifica toda la campaña. Elige bueno.`;
+Ese apodo te identificará durante toda la campaña. Elígelo con cuidado.`;
   },
 
   usernameInvalido: (razon, sugerencia) =>
-`Ese apodo no funciona 😅
+`Ese apodo no es válido.
 *${razon}*
 
-${sugerencia ? `¿Qué tal *${sugerencia}*? O escribe otro tú.` : "Escribe otro nombre."}
+${sugerencia ? `Te sugerimos *${sugerencia}*, o envía otro.` : "Envía otro nombre."}
 
-💡 Si quieres empezar de cero, escribe *reiniciar*.`,
+Si deseas empezar de nuevo, escribe *REINICIAR*.`,
 
   usernameProfanity: (sugerencia) =>
-`Ese apodo no funciona 😅
-*Nuestro filtro lo marcó por error o por tener una palabra restringida.*
+`Ese apodo no es válido.
+*Nuestro filtro lo identificó como inapropiado o contiene una palabra restringida.*
 
-${sugerencia ? `¿Qué tal *${sugerencia}*? O escribe otro.` : "Prueba con otro apodo."}
+${sugerencia ? `Te sugerimos *${sugerencia}*, o envía otro.` : "Envía otro apodo."}
 
-💡 Si crees que es un error, escribe *SOPORTE* y dime tu nombre real para revisarlo.`,
+Si consideras que es un error, escribe *SOPORTE* y proporciona tu nombre real para revisarlo.`,
 
   usernameTomado: (sugerencia) =>
-`Ese apodo ya tiene dueño 😅
+`Ese apodo ya está en uso.
 
-Cada apodo es único — primer fanático que lo elige se lo queda.
+Cada apodo es único. El primer fanático que lo elige se lo queda.
 
-¿Qué tal *${sugerencia}*? O inventa uno propio.
+Te sugerimos *${sugerencia}*, o envía uno propio.
 
-🎯 Tip: agregar números o tu marca favorita ayuda — *NutriQueen*, *MoyoKing*, *ChilimChef*`,
+Sugerencia: agregar números o tu marca favorita ayuda. Ejemplos: *NutriQueen*, *MoyoKing*, *ChilimChef*.`,
 
   registroCompleto: (username, magicLink, rondasHoy) =>
-`¡Listo, *${username}*! 🎉 Ya eres oficial *Fanático del Sabor*.
+`Listo, *${username}*. Ya eres oficial *Fanático del Sabor*.
 
-🎮 *Toca aquí para jugar:*
+*Toca aquí para jugar:*
 ${magicLink}
 
-⏱️ El link es solo tuyo. Expira en *1 hora* y funciona *una sola vez*.
+El link es solo tuyo. Expira en *1 hora* y funciona *una sola vez*.
 
 Vas en la ronda *${rondasHoy}/${RONDAS_MAX}* de hoy.`,
 
   folioAdicional: (username, rondaNum, magicLink) =>
-`✅ ¡Otra ronda, *${username}*!
+`Otra ronda lista, *${username}*.
 
-🎮 *Ronda ${rondaNum}/${RONDAS_MAX}* — toca aquí:
+*Ronda ${rondaNum}/${RONDAS_MAX}* — toca aquí:
 ${magicLink}
 
 ${rondaNum < RONDAS_MAX
-  ? `Te quedan *${RONDAS_MAX - rondaNum} rondas* hoy. ¡A subir en el ranking!`
-  : `🔥 Última ronda de hoy. Mañana a medianoche se reinician.`}`,
+  ? `Te quedan *${RONDAS_MAX - rondaNum} rondas* hoy. A subir en el ranking.`
+  : `Última ronda de hoy. Mañana a medianoche se reinician.`}`,
 
   reenvioLink: (username, magicLink) =>
-`Aún no terminaste tu ronda actual, *${username || "Fanático"}* 🎮
+`Aún no terminaste tu ronda actual, *${username || "Fanático"}*.
 
-Te reenvío el link para que termines los 4 minijuegos:
+Te reenvío el link para que completes los 4 minijuegos:
 ${magicLink}
 
-✅ Cuando completes esa ronda, mándame el folio nuevo y lo registro.
+Cuando completes esa ronda, envíame el folio nuevo y lo registraré.
 
-⏱️ Tienes hasta *15 minutos* para terminar antes de que el folio se libere automático.
-🔄 Si recibiste varios links, *usa el más reciente* — los anteriores ya no funcionan.`,
+Tienes hasta *15 minutos* para terminar antes de que el folio se libere automáticamente.
+Si recibiste varios links, *usa el más reciente* — los anteriores ya no funcionan.`,
 
   rondaCompletada: (username, score, rondasHoy, puntosTotal, posicion, totalJugadores) => {
     let posLine = "";
     if (posicion && totalJugadores) {
-      posLine = `\n🏆 Vas en el lugar *#${posicion}* de ${fmt(totalJugadores)}`;
+      posLine = `\nVas en el lugar *#${posicion}* de ${fmt(totalJugadores)}.`;
     }
-    return `🎉 *¡Cerraste la ronda, ${username}!*
+    return `Cerraste la ronda, *${username}*.
 
-⚽ Esta partida: *${fmt(score)} pts*
-🔥 Total acumulado: *${fmt(puntosTotal)} pts*${posLine}
+Esta partida: *${fmt(score)} pts*
+Total acumulado: *${fmt(puntosTotal)} pts*${posLine}
 
-Te quedan *${RONDAS_MAX - rondasHoy} rondas* hoy — manda otro folio para subir más.`;
+Te quedan *${RONDAS_MAX - rondasHoy} rondas* hoy. Envía otro folio para seguir.`;
   },
 
   rondaCompletadaMaxDia: (username, score, puntosTotal, posicion, totalJugadores) => {
     let posLine = "";
     if (posicion && totalJugadores) {
-      posLine = `\n🏆 Vas en el lugar *#${posicion}* de ${fmt(totalJugadores)}`;
+      posLine = `\nVas en el lugar *#${posicion}* de ${fmt(totalJugadores)}.`;
     }
-    return `🏆 *¡Todas tus rondas, ${username}!*
+    return `Completaste todas tus rondas del día, *${username}*.
 
-⚽ Última ronda: *${fmt(score)} pts*
-🔥 Total del día: *${fmt(puntosTotal)} pts*${posLine}
+Última ronda: *${fmt(score)} pts*
+Total del día: *${fmt(puntosTotal)} pts*${posLine}
 
-Mañana a *medianoche CDMX* se reinician las rondas.
+Las rondas se reinician mañana a *medianoche (hora CDMX)*.
 
-💡 Comparte con tus amigos para que jueguen — pero *no compartas tus folios* (cada uno es único).`;
+Comparte la campaña con tus amigos para que jueguen, pero *no compartas tus folios*: cada uno es único.`;
   },
 
   maxRondas: (username) =>
-`Ya jugaste tus *${RONDAS_MAX} rondas* de hoy, *${username}* 🏆
+`Ya completaste tus *${RONDAS_MAX} rondas* de hoy, *${username}*.
 
-Guarda ese folio — sigue válido por *${DIAS_VALIDEZ} días*. Mañana lo canjeas.
+Guarda ese folio. Sigue siendo válido por *${DIAS_VALIDEZ} días*. Puedes canjearlo mañana.
 
-🌅 Las rondas se reinician a *medianoche CDMX*.
+Las rondas se reinician a *medianoche (hora CDMX)*.
 
-📊 Mira tu posición → *PUNTOS*`,
+Para ver tu posición, escribe *PUNTOS*.`,
 
   folioError: (error) => {
     const msgs = {
       formato:
-`🤔 No vi un folio válido en tu mensaje.
+`No identifiqué un folio válido en tu mensaje.
 
-Lo que busco:
+Necesito:
 ↳ *21 dígitos* exactos
-↳ Empieza con *84*
-↳ Solo los números (sin foto, sin texto extra)
+↳ Que empiece con *84*
+↳ Solo los números (sin fotografía, sin texto adicional)
 
-¿No sabes dónde está? Escribe *FOLIO* y te muestro 📋
+Si no sabes dónde está, escribe *FOLIO* y te indico.
 
-💡 Si estabas escribiendo otra cosa, escribe *AYUDA* para ver opciones.`,
+Si estabas escribiendo otra cosa, escribe *AYUDA* para ver las opciones.`,
 
       prefijo:
-`Tu folio debe empezar con *84* 📋
+`Tu folio debe empezar con *84*.
 
 Si empieza con otro número, no es de las marcas participantes.
 
-Si lo copiaste mal, revisa el ticket e inténtalo de nuevo.
+Si lo copiaste incorrectamente, revisa el ticket e inténtalo de nuevo.
 
-💡 Las marcas son: Nutrisa, Moyo, Cielito Café, Chilim Balam. Escribe *TIENDAS* para más info.`,
+Las marcas participantes son: Nutrisa, Moyo, Cielito Café y Chilim Balam. Escribe *TIENDAS* para más información.`,
 
       invalid_format:
-`El folio no tiene formato correcto.
+`El folio no tiene el formato correcto.
 
 Debe ser *21 dígitos* exactos, empezando con *84*.
 
-Si copiaste el ticket entero, mándame *solo* los dígitos.
+Si copiaste el ticket entero, envíame *únicamente* los dígitos.
 
-💡 Escribe *FOLIO* si necesitas ayuda para ubicarlo en tu ticket.`,
+Escribe *FOLIO* si necesitas ayuda para ubicarlo en tu ticket.`,
 
       invalid_empresa:
 `Ese folio no es de una marca participante.
 
-Solo aceptamos folios de: *Nutrisa*, *Moyo*, *Cielito Café*, *Chilim Balam*.
+Solo aceptamos folios de: *Nutrisa*, *Moyo*, *Cielito Café* y *Chilim Balam*.
 
-💡 Escribe *TIENDAS* para más detalle.`,
+Escribe *TIENDAS* para más detalle.`,
 
       invalid_date:
-`La fecha en ese folio no es válida 🤔
+`La fecha en ese folio no es válida.
 
-Revisa que copiaste todos los dígitos correctamente.
+Revisa que hayas copiado todos los dígitos correctamente.
 
-💡 Si crees que tu ticket está dañado, escribe *SOPORTE*.`,
+Si consideras que tu ticket está dañado, escribe *SOPORTE*.`,
 
       unknown_store:
-`Esa tienda no aparece en mi lista de participantes 🧐
+`Esa tienda no aparece en la lista de participantes.
 
 ¿Es un ticket de Nutrisa, Moyo, Cielito Café o Chilim Balam?
-Si sí: el ticket podría estar dañado, intenta con otro.
+Si lo es, el ticket podría estar dañado. Intenta con otro.
 
-💡 ¿Crees que es un error nuestro? Escribe *SOPORTE*.`,
+Si consideras que es un error nuestro, escribe *SOPORTE*.`,
 
       expired:
-`😕 Ese ticket ya tiene más de *${DIAS_VALIDEZ} días*.
+`Ese ticket tiene más de *${DIAS_VALIDEZ} días*.
 
-Los tickets duran *${DIAS_VALIDEZ} días* desde la compra. Después no se pueden canjear.
+Los tickets son válidos por *${DIAS_VALIDEZ} días* desde la compra. Después no pueden canjearse.
 
-🎫 ¿Tienes uno más reciente? Mándame ese.
+Si tienes uno más reciente, envíalo.
 
-💡 *Pro tip:* manda tu folio el mismo día de la compra. Así nunca se vence.`,
+Sugerencia: envía tu folio el mismo día de la compra para evitar que se venza.`,
 
       not_yet_valid:
-`La fecha del ticket todavía no llega 🤔
+`La fecha del ticket aún no llega.
 
-Revisa la fecha en tu ticket — debe ser de *hoy o ayer*.
+Revisa la fecha en tu ticket. Debe ser de *hoy o ayer*.
 
-💡 Si la fecha está bien y aun así da error, escribe *SOPORTE*.`,
+Si la fecha es correcta y aun así da error, escribe *SOPORTE*.`,
 
       date_too_early:
-`Ese ticket es anterior al inicio de la campaña 📅
+`Ese ticket es anterior al inicio de la campaña.
 
-*Fanáticos del Sabor* arrancó hace poco. Solo cuentan tickets desde entonces.
+*Fanáticos del Sabor* arrancó recientemente. Solo cuentan tickets desde esa fecha.
 
-🎫 ¿Tienes uno más reciente? Mándame ese.`,
+Si tienes uno más reciente, envíalo.`,
 
       campaign_ended:
-`Ya terminó *Fanáticos del Sabor* 🏁
+`*Fanáticos del Sabor* ya finalizó.
 
-La campaña concluyó. ¡Gracias por jugar! ⚽
-Mira los ganadores en ${SITE_URL}.`,
+La campaña concluyó. Gracias por jugar.
+Consulta los ganadores en ${SITE_URL}.`,
 
       folio_too_low:
-`Ese folio es de antes del inicio de la campaña 📋
+`Ese folio es anterior al inicio de la campaña.
 
-Solo se aceptan compras hechas durante *Fanáticos del Sabor*.
+Solo se aceptan compras realizadas durante *Fanáticos del Sabor*.
 
-🎫 ¿Tienes uno más reciente? Mándame ese.`,
+Si tienes uno más reciente, envíalo.`,
 
       already_used:
-`🔒 Ese folio ya fue canjeado.
+`Ese folio ya fue canjeado.
 
 Cada folio se usa una sola vez, por una sola persona.
 
-⚠️ Si lo compartiste con alguien:
-↳ Esa persona pudo haberlo usado antes que tú
-↳ Avísanos por *SOPORTE* si crees que fue robo
+Si lo compartiste con alguien:
+↳ Esa persona pudo haberlo usado antes que tú.
+↳ Escribe *SOPORTE* si consideras que fue un robo.
 
-💡 *Tu folio = tu llave personal.* Nunca lo compartas.
+*Tu folio es tu llave personal.* No lo compartas.
 
-🎫 ¿Tienes otro ticket? Mándame ese.`,
+Si tienes otro ticket, envíalo.`,
 
       ticket_limit_reached:
-`Ya jugaste tus *${RONDAS_MAX} rondas* de hoy 🏆
+`Ya completaste tus *${RONDAS_MAX} rondas* de hoy.
 Cada persona tiene *${RONDAS_MAX} rondas diarias*.
 
-🌅 Se reinician a *medianoche (hora CDMX)*.
-La hora de tu celular no importa — siempre es hora México.
+Se reinician a *medianoche (hora CDMX)*.
+La hora de tu celular no aplica: siempre es hora de México.
 
-💡 Guarda tu folio: sigue siendo válido por ${DIAS_VALIDEZ} días.`,
+Guarda tu folio: sigue siendo válido por ${DIAS_VALIDEZ} días.`,
 
       session_active:
-`Aún no terminaste tu ronda actual 🎮
+`Aún no terminaste tu ronda actual.
 
-👉 Entra a *${SITE_URL}* con el link que te mandé y *termina los 4 minijuegos*.
+Entra a *${SITE_URL}* con el link que te envié y *completa los 4 minijuegos*.
 
 Cuando completes esa ronda, podrás canjear otro folio.
 
-(Si no completas en 15 minutos, el folio se libera automático.)
+Si no completas en 15 minutos, el folio se libera automáticamente.
 
-💡 ¿Perdiste el link? Mándame de nuevo el folio que ya canjeaste para reenviártelo.`,
+Si perdiste el link, envíame de nuevo el folio que ya canjeaste para reenviártelo.`,
 
       rate_limited:
-`Estás mandando folios muy rápido 🛑
+`Estás enviando folios demasiado rápido.
 
-Espera *1 minuto* y vuelve a intentar.
+Espera *1 minuto* y vuelve a intentarlo.
 
-💡 Si crees que es un error, escribe *SOPORTE*.`,
+Si consideras que es un error, escribe *SOPORTE*.`,
 
       invalid_user_id:
-`Tuve un problema técnico con tu cuenta 😞
-*No es culpa tuya.* Escribe *REINICIAR* para empezar de cero.
+`Tuvimos un problema técnico con tu cuenta.
+*No es algo que hicieras mal.* Escribe *REINICIAR* para empezar de nuevo.
 
 Si el problema persiste, escribe *SOPORTE*.`,
 
       missing_user_id:
-`Tuve un problema técnico con tu cuenta 😞
-*No es culpa tuya.* Escribe *REINICIAR* para empezar de cero.
+`Tuvimos un problema técnico con tu cuenta.
+*No es algo que hicieras mal.* Escribe *REINICIAR* para empezar de nuevo.
 
 Si el problema persiste, escribe *SOPORTE*.`,
 
       unauthorized:
-`Hubo un problema con tu sesión 😞
-Escribe *REINICIAR* para empezar de cero.
+`Hubo un problema con tu sesión.
+Escribe *REINICIAR* para empezar de nuevo.
 
 Si el problema persiste, escribe *SOPORTE*.`,
 
       internal_error:
-`Tuvimos un problema técnico 😞
-*No es culpa tuya.* Inténtalo en 1-2 minutos.
+`Tuvimos un problema técnico.
+*No es algo que hicieras mal.* Inténtalo de nuevo en 1 a 2 minutos.
 
 Si el problema persiste, escribe *SOPORTE*.`,
     };
-    return msgs[error] || `No pude validar ese folio. ¿Revisas que esté completo y mándamelo de nuevo?
+    return msgs[error] || `No pude validar ese folio. Verifica que esté completo y envíalo de nuevo.
 
-💡 Si crees que algo no está bien, escribe *SOPORTE*.`;
+Si consideras que algo no está bien, escribe *SOPORTE*.`;
   },
 
   errorRegistro: () =>
-`Tuve un problema técnico al registrarte 😞
-*No es culpa tuya.* Intenta de nuevo en 1-2 minutos.
+`Tuvimos un problema técnico al registrarte.
+*No es algo que hicieras mal.* Intenta de nuevo en 1 a 2 minutos.
 
 Si el problema persiste, escribe *SOPORTE*.`,
 
   errorEdgeFunction: () =>
-`Estamos teniendo un problema temporal 🙏
-Inténtalo en 1-2 minutos.
+`Estamos teniendo un problema temporal.
+Inténtalo de nuevo en 1 a 2 minutos.
 
 Si sigue fallando, escribe *SOPORTE*.`,
 
   servidorSaturado: () =>
-`Mucha gente está jugando ahora mismo 🔥
-Inténtalo en *30 segundos*. Tu folio no se ha perdido.
+`Estamos recibiendo mucho tráfico.
+Inténtalo de nuevo en *30 segundos*. Tu folio no se ha perdido.
 
-(No me lo reenvíes, solo espera. Yo te respondo cuando se libere.)`,
+No es necesario reenviarlo. Espera y te responderemos cuando se libere.`,
 
   ayuda: (u) =>
-`👋 Soy *Gol*${u ? `, tu apodo es *${u}*` : ""}.
+`Soy *Gol*${u ? `, tu apodo es *${u}*` : ""}.
 
-Esto es lo que sé hacer:
+Esto es lo que puedo hacer:
 
-🎫 *Manda un folio* → Jugar una ronda
-📊 *PUNTOS* → Tu puntaje y posición
-🔗 *MI LINK* → Reenvío tu último link
-🎮 *OTRA RONDA* → Pedir otro folio
-🏆 *PREMIOS* → Lo que puedes ganar
-🏪 *TIENDAS* → Marcas participantes
-📋 *REGLAS* → Cómo funciona
-🔍 *FOLIO* → Dónde está en el ticket
-🔄 *REINICIAR* → Empezar de cero
+*Envía un folio* → Jugar una ronda
+*PUNTOS* → Tu puntaje y posición
+*MI LINK* → Reenviar tu último link
+*OTRA RONDA* → Pedir otro folio
+*PREMIOS* → Lo que puedes ganar
+*TIENDAS* → Marcas participantes
+*REGLAS* → Cómo funciona
+*FOLIO* → Dónde está en el ticket
+*REINICIAR* → Empezar de nuevo
 
-⚠️ *No leo:* fotos, audios, videos, ni stickers.
+*No proceso* fotografías, audios, videos ni stickers.
 
-🆘 *SOPORTE* → Hablar con un humano de Grupo Nutrisa.`,
+*SOPORTE* → Hablar con un humano de Grupo Nutrisa.`,
 
   puntos: (username, stats) => {
     if (!stats || stats.puntos_total === 0 || !stats.posicion) {
-      return `📊 Aún no tienes puntaje, *${username}*.
+      return `Aún no tienes puntaje, *${username}*.
 
-🎫 Manda un folio para jugar tu primera ronda y aparecer en el ranking.
+Envía un folio para jugar tu primera ronda y aparecer en el ranking.
 
-💡 Cada folio = 1 ronda de 4 minijuegos.`;
+Cada folio equivale a 1 ronda de 4 minijuegos.`;
     }
 
     const top3 = (stats.top_3 || []).slice(0, 3);
@@ -1460,176 +1488,176 @@ Esto es lo que sé hacer:
     const inTop3 = top3.some(u => u.username === username);
     const youLine = inTop3 ? "" : `\n\nTu lugar: *#${stats.posicion}* de ${fmt(stats.total_jugadores)} jugadores`;
 
-    return `📊 *${username}*, esto vas:
+    return `*${username}*, este es tu progreso:
 
-⚽ Total acumulado: *${fmt(stats.puntos_total)} pts*
-🎯 Mejor ronda: *${fmt(stats.mejor_ronda)} pts*${youLine}
+Total acumulado: *${fmt(stats.puntos_total)} pts*
+Mejor ronda: *${fmt(stats.mejor_ronda)} pts*${youLine}
 
-🏆 *Top 3 ahora:*
+*Top 3 actual:*
 ${top3Lines}
 
-🎫 ¿Quieres subir? Manda otro folio para jugar.`;
+Para subir, envía otro folio.`;
   },
 
   premios: () =>
-`🏆 *81 premios en total* — Fanáticos del Sabor
+`*81 premios en total* — Fanáticos del Sabor
 
 🥇 *Top 20 del leaderboard*
-↳ Meet & Greet con *La Cotorrisa* 🎤
+↳ Meet & Greet con *La Cotorrisa*
 ↳ El evento del año
 
 🥈 *Top 8 siguientes*
-↳ *Nintendo Switch 2* 🎮
+↳ *Nintendo Switch 2*
 ↳ La consola más buscada de 2026
 
 🥉 *Top 13 siguientes*
-↳ *LEGO Edición Especial* 🧱
+↳ *LEGO Edición Especial*
 ↳ Para coleccionistas
 
 🏅 *Top 40 siguientes*
-↳ *Merch firmado por La Cotorrisa* 👕
+↳ *Merchandising firmado por La Cotorrisa*
 ↳ Edición limitada de la campaña
 
-💪 *¿Cómo subir en el ranking?*
+*Cómo subir en el ranking:*
 ↳ Juega tus *${RONDAS_MAX} rondas diarias*
 ↳ Mejora tu puntaje en cada juego
-↳ Acumula puntos toda la campaña
+↳ Acumula puntos durante toda la campaña
 
-🔥 La campaña termina el *${CAMPAIGN_END_DATE}*. ¡A jugar!
+La campaña termina el *${CAMPAIGN_END_DATE}*.
 
-📊 Ver mi posición → *PUNTOS*`,
+Para ver tu posición, escribe *PUNTOS*.`,
 
   tiendas: () =>
-`🏪 *Las 4 marcas participantes:*
+`*Marcas participantes:*
 
-🥑 *Nutrisa* → yogurts y helados saludables
-🍦 *Moyo* → yogurt helado con toppings
-☕ *Cielito Café* → café y panadería
-🌮 *Chilim Balam* → cocina mexicana
+*Nutrisa* — yogurts y helados
+*Moyo* — yogurt helado con toppings
+*Cielito Café* — café y panadería
+*Chilim Balam* — cocina mexicana
 
-🎫 Compra en cualquiera → guarda el ticket → mándame el folio en *${DIAS_VALIDEZ} días*.
+Compra en cualquiera, guarda el ticket y envíame el folio dentro de los siguientes *${DIAS_VALIDEZ} días*.
 
-💡 Cada marca cuenta igual para tus puntos.`,
+Cada marca cuenta igual para tus puntos.`,
 
   reglas: () =>
-`📋 *Las reglas en 30 segundos:*
+`*Reglas de la campaña:*
 
-🎫 *1 folio = 1 ronda* (4 minijuegos)
-🎮 Máximo *${RONDAS_MAX} rondas* al día
-📅 Ticket válido *${DIAS_VALIDEZ} días* desde la compra
-🏆 Puntos *se acumulan* toda la campaña
-🌅 Rondas se reinician a *medianoche CDMX*
-🔒 Cada folio *una sola vez* — no lo compartas
-👤 *Un WhatsApp = una cuenta* (no hagas trampa)
+*1 folio = 1 ronda* (4 minijuegos)
+Máximo *${RONDAS_MAX} rondas* al día
+Ticket válido por *${DIAS_VALIDEZ} días* desde la compra
+Los puntos *se acumulan* durante toda la campaña
+Las rondas se reinician a *medianoche (hora CDMX)*
+Cada folio se usa *una sola vez*. No lo compartas.
+*Un WhatsApp equivale a una cuenta.* No se permiten cuentas duplicadas.
 
-📅 La campaña termina el *${CAMPAIGN_END_DATE}*.
+La campaña termina el *${CAMPAIGN_END_DATE}*.
 
-💡 ¿Algo no te queda claro? Escribe *AYUDA* o *SOPORTE*.`,
+Si algo no queda claro, escribe *AYUDA* o *SOPORTE*.`,
 
   dondeFolio: () =>
-`📋 *Cómo encontrar tu folio:*
+`*Cómo encontrar tu folio:*
 
-🧾 Mira la *parte de arriba del ticket*
-🔢 Busca *21 dígitos seguidos*
-🟢 Siempre empieza con *84*
-📍 Está antes de la lista de productos
+Mira la *parte superior del ticket*.
+Busca *21 dígitos seguidos*.
+Siempre empieza con *84*.
+Está antes de la lista de productos.
 
-📷 Te mandé una imagen de ejemplo arriba — fíjate en los números marcados.
+Te envié una imagen de ejemplo. Fíjate en los números marcados.
 
-⚠️ *Importante:*
-↳ ❌ No me mandes la foto, no puedo leerla
-↳ ❌ No me mandes el ticket completo escrito
-↳ ✅ Solo los 21 números pegados
+*Importante:*
+↳ No envíes la fotografía. No puedo leerla.
+↳ No envíes el ticket completo escrito.
+↳ Envía únicamente los 21 números.
 
-💡 Tip iOS/Android: mantén presionado el número en tu ticket fotografiado para copiarlo.`,
+Consejo: en iOS y Android, mantén presionado el número en la foto de tu ticket para copiarlo.`,
 
   gracias: (u) =>
-`¡Con gusto${u ? `, *${u}*` : ""}! ⚽
+`Con gusto${u ? `, *${u}*` : ""}.
 
-💡 Si necesitas algo más, escribe *AYUDA*.`,
+Si necesitas algo más, escribe *AYUDA*.`,
 
   noTexto: () =>
-`😅 Soy un bot de texto — no leo fotos, audios ni videos.
+`Soy un bot de texto. No proceso fotografías, audios, videos ni stickers.
 
-🎫 *¿Querías mandar tu folio?*
-↳ Cópialo directo del ticket (los *21 números*)
-↳ Pégalo aquí como texto
-↳ ¿No sabes cómo? Escribe *FOLIO*
+*Si querías enviar tu folio:*
+↳ Cópialo directo del ticket (los *21 números*).
+↳ Pégalo aquí como texto.
+↳ Si no sabes cómo, escribe *FOLIO*.
 
-💬 *¿Querías otra cosa?*
-↳ Escribe *AYUDA* para ver todas mis opciones
-↳ Escribe *SOPORTE* si necesitas hablar con un humano`,
+*Si querías otra cosa:*
+↳ Escribe *AYUDA* para ver todas las opciones.
+↳ Escribe *SOPORTE* si necesitas hablar con un humano.`,
 
   pedirFolio: () =>
-`Para continuar necesito tu *folio* 🎫
+`Para continuar necesito tu *folio*.
 
-📍 *Cómo encontrarlo:*
+*Cómo encontrarlo:*
 ↳ 21 dígitos
 ↳ Empieza con *84*
-↳ Arriba del ticket
+↳ Está en la parte superior del ticket
 
-✅ *Cópialo y pégalo directo* — no me mandes la foto.
+Cópialo y pégalo directo. No envíes la fotografía.
 
-¿Dudas? Escribe *FOLIO* para que te explique mejor.
-¿Necesitas otra cosa? Escribe *AYUDA*.`,
+Si tienes dudas, escribe *FOLIO* para más detalles.
+Si necesitas otra cosa, escribe *AYUDA*.`,
 
   soporteIntro: () =>
-`🆘 *Te pongo en contacto con un humano de Grupo Nutrisa.*
+`*Te pondremos en contacto con un humano de Grupo Nutrisa.*
 
-Cuéntame en una sola frase qué necesitas:
+Descríbenos en una sola frase qué necesitas. Por ejemplo:
 ↳ "Mi folio está dañado"
 ↳ "Alguien usó mi folio"
 ↳ "No me llega el link"
 ↳ "Quiero reportar un problema"
-↳ Lo que sea
+↳ Cualquier otro asunto
 
-📩 Recibimos tu mensaje y un humano te contesta en *menos de 24 horas* (lunes a viernes 9-6 CDMX).
+Un humano te contestará en *menos de 24 horas* (lunes a viernes, 9:00 a 18:00 CDMX).
 
-💡 Mientras tanto: si tu problema es no recibir el link, manda otro folio para generar uno nuevo.
+Sugerencia: si no has recibido tu link, envía otro folio para generar uno nuevo.
 
-(Si cambias de opinión, escribe *cancelar*.)`,
+Si cambias de opinión, escribe *CANCELAR*.`,
 
   soporteConfirmado: () =>
-`✅ *Reporte recibido.*
+`*Reporte recibido.*
 
-Un humano de Grupo Nutrisa revisará tu caso. Te contactamos pronto.
+Un humano de Grupo Nutrisa revisará tu caso y te contactará pronto.
 
-🎫 Mientras tanto puedes seguir jugando si tienes otro folio.`,
+Puedes seguir jugando si tienes otro folio.`,
 
   soporteCancelado: () =>
-`Va, cancelado 👌
+`Listo, cancelado.
 
 Si cambias de opinión, escribe *SOPORTE* otra vez.
 
-¿Otra cosa que necesites? Escribe *AYUDA*.`,
+Si necesitas otra cosa, escribe *AYUDA*.`,
 
   miLink: (username, magicLink) =>
-`🔗 Aquí va tu link, *${username}*:
+`Aquí está tu link, *${username}*:
 
 ${magicLink}
 
-⏱️ Expira en *1 hora*. Si ya pasó, manda otro folio y te genero uno nuevo.`,
+Expira en *1 hora*. Si ya expiró, envía otro folio para generar uno nuevo.`,
 
   miLinkNoActivo: (username) =>
-`No tienes una ronda abierta ahorita, *${username || "Fanático"}* 🤔
+`No tienes una ronda activa, *${username || "Fanático"}*.
 
-🎫 Para jugar, *manda un folio*. Te genero un link nuevo al momento.
+Envía un folio para iniciar una nueva ronda. Te generaré un link al momento.
 
-📊 ¿Solo querías ver tu puntaje? Escribe *PUNTOS*.`,
+Si solo querías ver tu puntaje, escribe *PUNTOS*.`,
 
   otraRonda: (username, rondasHoy) => {
     if (rondasHoy >= RONDAS_MAX) {
-      return `Ya jugaste tus *${RONDAS_MAX} rondas* de hoy, *${username}* 🏆
+      return `Ya completaste tus *${RONDAS_MAX} rondas* de hoy, *${username}*.
 
-Mañana a *medianoche CDMX* se reinician.
+Se reinician mañana a *medianoche (hora CDMX)*.
 
-📊 Mira tu posición → *PUNTOS*`;
+Para ver tu posición, escribe *PUNTOS*.`;
     }
-    return `¡Va, *${username}*! 🔥
+    return `Perfecto, *${username}*.
 
-Cáele por otro yogurt, café o snack a *Nutrisa, Moyo, Cielito Café o Chilim Balam* — cada compra = otra oportunidad de subir en el ranking.
+Compra otro producto en *Nutrisa, Moyo, Cielito Café o Chilim Balam*. Cada compra es una oportunidad de subir en el ranking.
 
-🎫 *Manda los 21 dígitos del folio* de tu nuevo ticket (te paso la imagen de dónde buscarlo arriba ⬆️).
+Envía los 21 dígitos del folio de tu nuevo ticket.
 
 Te quedan *${RONDAS_MAX - rondasHoy} rondas* hoy.`;
   },
@@ -1694,11 +1722,12 @@ async function procesarMensajeCore(tel, texto, trace) {
   const intencion = detectarIntencion(texto);
   let s = getSesion(tel);
 
-  // v3.35: Re-cargar de BD si caché está stale (>3 min sin actividad) Y la fase es segura
-  // Esto previene que una réplica use datos viejos cuando otra réplica modificó la BD
+  // v3.37: Re-cargar de BD si caché está stale (>3 min sin actividad) Y la fase es segura
+  // Esto previene que una réplica use datos viejos cuando otra réplica modificó la BD.
+  // Incluimos esperando_soporte para que cambios cross-réplica se reflejen.
   const cacheIsStale = s.cargado && s.lastSeen && 
     (Date.now() - s.lastSeen > CACHE_STALE_MS) &&
-    (s.fase === "activo" || s.fase === "esperando_folio" || s.fase === "nuevo" || s.fase === "desconocido");
+    (s.fase === "activo" || s.fase === "esperando_folio" || s.fase === "nuevo" || s.fase === "desconocido" || s.fase === "esperando_soporte");
   
   if (!s.cargado || cacheIsStale) {
     if (cacheIsStale) {
@@ -1797,6 +1826,37 @@ async function procesarMensajeCore(tel, texto, trace) {
   let rondasHoy  = s.fechaReset === hoy ? (s.rondasHoy || 0) : 0;
   const diasSinJugar = s.diasSinJugar || 0;
 
+  // v3.37 helper: recuperar perfil de BD al vuelo cuando el cache no tiene userId pero el user podría estar registrado.
+  // Esto cubre el caso de cambio de réplica, restart, o cache no poblado.
+  async function recoverFromDB(reason) {
+    log.warn(trace, `recoverFromDB (${reason}): cache sin userId, verificando BD para ${tel}`);
+    metrics.last_resort_db_check = (metrics.last_resort_db_check || 0) + 1;
+    const profile = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
+    if (profile?.found && profile?.wa_registered && profile?.wa_username && profile?.user_id) {
+      const rec = {
+        username: profile.wa_username,
+        userId:   profile.user_id,
+        rondasHoy: profile.wa_fecha_reset === hoy ? (profile.wa_rondas_hoy || 0) : 0,
+        diasSinJugar: diasSinActividad(profile),
+      };
+      setSesion(tel, {
+        cargado: true,
+        fase: "activo",
+        username: rec.username,
+        userId: rec.userId,
+        registered: true,
+        rondasHoy: rec.rondasHoy,
+        rondasTotal: profile.wa_rondas_total || 0,
+        fechaReset: profile.wa_fecha_reset || null,
+        diasSinJugar: rec.diasSinJugar,
+      });
+      log.info(trace, `recoverFromDB (${reason}): recuperado ${rec.username}`);
+      metrics.last_resort_db_recovered = (metrics.last_resort_db_recovered || 0) + 1;
+      return rec;
+    }
+    return null;
+  }
+
   if (s.fechaReset && s.fechaReset !== hoy && userId) {
     rondasHoy = 0;
     setSesion(tel, { rondasHoy: 0, fechaReset: hoy });
@@ -1809,13 +1869,24 @@ async function procesarMensajeCore(tel, texto, trace) {
     return enviar(tel, M.soporteIntro(), trace);
   }
   if (s.fase === "esperando_soporte") {
-    if (intencion === "cancelar") {
+    // v3.37: early-exit del modo soporte si el usuario manda comandos claros.
+    // Esto evita que un folio o "reiniciar" se manden a Airtable como "reporte".
+    const earlyExitIntents = ["reiniciar", "folio_input", "ayuda", "puntos", "mi_link", "otra_ronda", "saludo"];
+    if (earlyExitIntents.includes(intencion)) {
+      log.info(trace, `Soporte cancelado por intent "${intencion}" — bypass automático`);
+      metrics.soporte_auto_cancel = (metrics.soporte_auto_cancel || 0) + 1;
+      setSesion(tel, { fase: username ? "activo" : "nuevo" });
+      // No respondemos M.soporteCancelado() — el handler del intent siguiente responde
+      // Re-leer la sesión para que los handlers de abajo vean la fase actualizada
+      s = getSesion(tel);
+    } else if (intencion === "cancelar") {
       setSesion(tel, { fase: username ? "activo" : "nuevo" });
       return enviar(tel, M.soporteCancelado(), trace);
+    } else {
+      await bcSyncSoporte(tel, username, texto, "Otro").catch(() => {});
+      setSesion(tel, { fase: username ? "activo" : "nuevo" });
+      return enviar(tel, M.soporteConfirmado(), trace);
     }
-    await bcSyncSoporte(tel, username, texto, "Otro").catch(() => {});
-    setSesion(tel, { fase: username ? "activo" : "nuevo" });
-    return enviar(tel, M.soporteConfirmado(), trace);
   }
 
   if (intencion === "reiniciar") {
@@ -1827,15 +1898,18 @@ async function procesarMensajeCore(tel, texto, trace) {
   if (intencion === "ayuda")       { metrics.cmd_ayuda_invoked++;   return enviar(tel, M.ayuda(username), trace); }
   if (intencion === "puntos")      {
     metrics.cmd_puntos_invoked++;
-    if (!userId) {
-      return enviar(tel, M.bienvenidaNuevo(), trace);
+    let _puid = userId, _puser = username;
+    if (!_puid) {
+      const rec = await recoverFromDB("puntos");
+      if (rec) { _puid = rec.userId; _puser = rec.username; }
     }
-    // v3.33: REMOVIDO sbRpc("auto_sync_all_orphans") — generaba scores random
-    // para folios canjeados sin sesión (phantom scores bug). Ya neutralizada en Supabase.
+    if (!_puid) {
+      return enviar(tel, `Para ver tu puntaje primero necesitas registrarte. Envíame tu folio: 21 dígitos que empiezan con 84.`, trace);
+    }
     let statsRes = null;
     let rpcFailed = false;
     try {
-      statsRes = await sbRpc("get_user_stats_for_bot", { p_user_id: userId }, trace);
+      statsRes = await sbRpc("get_user_stats_for_bot", { p_user_id: _puid }, trace);
     } catch (e) {
       rpcFailed = true;
       log.error(trace, `get_user_stats_for_bot failed: ${e.message}`);
@@ -1844,28 +1918,38 @@ async function procesarMensajeCore(tel, texto, trace) {
       return enviar(tel, M.errorEdgeFunction(), trace);
     }
     if (!statsRes || statsRes.found === false) {
-      return enviar(tel, M.puntos(username || "Fanático", null), trace);
+      return enviar(tel, M.puntos(_puser || "Fanático", null), trace);
     }
-    return enviar(tel, M.puntos(username || statsRes.username, statsRes), trace);
+    return enviar(tel, M.puntos(_puser || statsRes.username, statsRes), trace);
   }
   if (intencion === "mi_link")     {
     metrics.cmd_mi_link_invoked++;
-    if (!userId) {
-      return enviar(tel, M.bienvenidaNuevo(), trace);
+    let _muid = userId, _muser = username;
+    if (!_muid) {
+      const rec = await recoverFromDB("mi_link");
+      if (rec) { _muid = rec.userId; _muser = rec.username; }
+    }
+    if (!_muid) {
+      return enviar(tel, `Para recibir un link primero necesitas registrarte. Envíame tu folio: 21 dígitos que empiezan con 84.`, trace);
     }
     const linkRes = await waAuth("get_link", { phone: tel }, trace).catch(() => null);
     if (linkRes?.ok && linkRes.magic_link) {
-      return enviar(tel, M.miLink(username || "Fanático", linkRes.magic_link), trace);
+      return enviar(tel, M.miLink(_muser || "Fanático", linkRes.magic_link), trace);
     }
-    return enviar(tel, M.miLinkNoActivo(username), trace);
+    return enviar(tel, M.miLinkNoActivo(_muser), trace);
   }
   if (intencion === "otra_ronda")  {
     metrics.cmd_otra_ronda_invoked++;
-    if (!userId) {
-      return enviar(tel, M.bienvenidaNuevo(), trace);
+    let _u = username, _uid = userId, _rondas = rondasHoy;
+    if (!_uid) {
+      const rec = await recoverFromDB("otra_ronda");
+      if (rec) { _u = rec.username; _uid = rec.userId; _rondas = rec.rondasHoy; }
     }
-    await enviarImagen(tel, IMG_FOLIO, "📋 Aquí está el folio en tu ticket — los 21 dígitos que empiezan con 84", trace);
-    return enviar(tel, M.otraRonda(username || "Fanático", rondasHoy), trace);
+    if (!_uid) {
+      // genuinamente nuevo: mensaje corto, no el de bienvenida completo
+      return enviar(tel, `Para empezar envíame tu folio: 21 dígitos que empiezan con 84.`, trace);
+    }
+    return enviar(tel, M.otraRonda(_u || "Fanático", _rondas), trace);
   }
   if (intencion === "premios")     { metrics.cmd_premios_invoked++; return enviar(tel, M.premios(), trace); }
   if (intencion === "tiendas")     { metrics.cmd_tiendas_invoked++; return enviar(tel, M.tiendas(), trace); }
@@ -1878,15 +1962,20 @@ async function procesarMensajeCore(tel, texto, trace) {
   }
 
   if (intencion === "saludo") {
-    if (username) {
-      if (diasSinJugar >= DIAS_RE_ENGAGEMENT) {
+    let _u = username, _uid = userId, _rondas = rondasHoy, _dias = diasSinJugar;
+    if (!_uid) {
+      const rec = await recoverFromDB("saludo");
+      if (rec) { _u = rec.username; _uid = rec.userId; _rondas = rec.rondasHoy; }
+    }
+    if (_u) {
+      if (_dias >= DIAS_RE_ENGAGEMENT) {
         metrics.reengagement_triggered++;
-        return enviar(tel, M.bienvenidaReEngagement(username), trace);
+        return enviar(tel, M.bienvenidaReEngagement(_u), trace);
       }
-      if (diasSinJugar === 1 && rondasHoy === 0) {
-        return enviar(tel, M.bienvenidaNuevoDia(username), trace);
+      if (_dias === 1 && _rondas === 0) {
+        return enviar(tel, M.bienvenidaNuevoDia(_u), trace);
       }
-      return enviar(tel, M.bienvenidaConocido(username, rondasHoy), trace);
+      return enviar(tel, M.bienvenidaConocido(_u, _rondas), trace);
     }
     setSesion(tel, { fase: "esperando_folio" });
     await enviarImagen(tel, IMG_FOLIO, "📋 Tu folio: 21 dígitos que empiezan con 84", trace);
@@ -1894,9 +1983,14 @@ async function procesarMensajeCore(tel, texto, trace) {
   }
 
   if (intencion === "atajo_codigo") {
-    if (username) {
+    let _u = username, _uid = userId, _rondas = rondasHoy;
+    if (!_uid) {
+      const rec = await recoverFromDB("atajo_codigo");
+      if (rec) { _u = rec.username; _uid = rec.userId; _rondas = rec.rondasHoy; }
+    }
+    if (_u) {
       setSesion(tel, { fase: "esperando_folio" });
-      return enviar(tel, M.atajoConocido(username, rondasHoy), trace);
+      return enviar(tel, M.atajoConocido(_u, _rondas), trace);
     }
     setSesion(tel, { fase: "esperando_folio" });
     await enviarImagen(tel, IMG_FOLIO, "📋 Tu folio: 21 dígitos que empiezan con 84", trace);
@@ -1907,8 +2001,8 @@ async function procesarMensajeCore(tel, texto, trace) {
     if (intencion === "folio_input") {
       log.info(trace, `Folio recibido en esperando_username — pidiendo username del folio anterior`);
       return enviar(tel,
-        `Antes mándame *un apodo* para tu folio anterior 👤\n\n` +
-        `O escribe *reiniciar* si prefieres empezar con este folio nuevo.`,
+        `Antes envíame *un apodo* para tu folio anterior.\n\n` +
+        `O escribe *REINICIAR* si prefieres empezar con este folio nuevo.`,
         trace
       );
     }
@@ -1932,7 +2026,7 @@ async function procesarMensajeCore(tel, texto, trace) {
       log.warn(trace, `BUG GUARD: register intentado sin pendingFolio — usuario perdió el estado`);
       metrics.register_aborted_no_folio = (metrics.register_aborted_no_folio || 0) + 1;
       setSesion(tel, { fase: "esperando_folio", pendingFolio: null });
-      return enviar(tel, `Algo se desincronizó 😅 Mándame tu folio otra vez 🎫`, trace);
+      return enviar(tel, `Hubo un problema al sincronizar tu sesión. Envíame tu folio de nuevo, por favor.`, trace);
     }
 
     log.info(trace, `→ register username="${nombrePropuesto}" phone=${tel}`);
@@ -1966,7 +2060,7 @@ async function procesarMensajeCore(tel, texto, trace) {
     if (!pendFolio) {
       log.warn(trace, "Sin pendingFolio en esperando_username");
       setSesion(tel, { fase: "esperando_folio" });
-      return enviar(tel, `Hubo un problema. Mándame tu folio de nuevo 🎫`, trace);
+      return enviar(tel, `Hubo un problema. Envíame tu folio de nuevo, por favor.`, trace);
     }
 
     const claimRes = await sbRpc("validate_and_claim_ticket", {
@@ -2018,7 +2112,7 @@ async function procesarMensajeCore(tel, texto, trace) {
 
     if (!regRes.magic_link) {
       log.warn(trace, `Magic link no generado, fallback URL`);
-      return enviar(tel, `¡Listo *${finalUsername}*! 🎉\n\nVe a *${SITE_URL}* para entrar a jugar.\nRonda *${rondaNum}* de *${RONDAS_MAX}* hoy 🎮`, trace);
+      return enviar(tel, `Listo, *${finalUsername}*.\n\nVe a *${SITE_URL}* para entrar a jugar.\nRonda *${rondaNum}* de *${RONDAS_MAX}* hoy.`, trace);
     }
     log.info(trace, `Magic link generado: ${maskLink(regRes.magic_link)}`);
     return enviar(tel, M.registroCompleto(finalUsername, regRes.magic_link, rondaNum), trace);
@@ -2133,7 +2227,7 @@ async function procesarMensajeCore(tel, texto, trace) {
 
       const linkRes = await waAuth("get_link", { phone: tel }, trace);
       if (!linkRes?.magic_link) {
-        return enviar(tel, `✅ ¡Folio registrado, *${username}*!\nVe a *${SITE_URL}* para jugar.\nRonda *${rondaParaMostrar}* de *${RONDAS_MAX}* hoy.`, trace);
+        return enviar(tel, `Folio registrado, *${username}*.\nVe a *${SITE_URL}* para jugar.\nRonda *${rondaParaMostrar}* de *${RONDAS_MAX}* hoy.`, trace);
       }
       log.info(trace, `Magic link generado: ${maskLink(linkRes.magic_link)}`);
       return enviar(tel, M.folioAdicional(username, rondaParaMostrar, linkRes.magic_link), trace);
@@ -2149,7 +2243,7 @@ async function procesarMensajeCore(tel, texto, trace) {
   }
 
   if (s.fase === "activo" && username) {
-    return enviar(tel, `¿Tienes un folio nuevo, *${username}*? Mándamelo 🎫\n\nO escribe *AYUDA* si necesitas algo.`, trace);
+    return enviar(tel, `¿Tienes un folio nuevo, *${username}*? Envíalo, por favor.\n\nO escribe *AYUDA* si necesitas algo.`, trace);
   }
   if (s.fase === "esperando_folio") return enviar(tel, M.pedirFolio(), trace);
 
