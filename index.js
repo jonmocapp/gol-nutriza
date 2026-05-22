@@ -1113,188 +1113,188 @@ function atLog(tel, mensaje, direccion, fase) {
 
 const M = {
   bienvenidaNuevo: () =>
-`Hola, soy *Gol*, tu guía oficial en *Fanáticos del Sabor*.
+`¡Hola! ⚽ Soy *Gol*, tu guía oficial en *Fanáticos del Sabor*.
 
-Para registrarte y comenzar a jugar necesito el folio de tu ticket.
+Para registrarte y comenzar a jugar necesito el folio de tu ticket 🎫
 
-*Dónde encontrarlo:*
+📍 *Dónde encontrarlo:*
 ↳ Está en la parte superior del ticket
 ↳ Empieza con *84* y tiene *21 dígitos*
 ↳ Cópialo directo del ticket (envía solo los números, no la fotografía)
 
-*Importante:* tu ticket debe ser de los últimos *${DIAS_VALIDEZ} días*.
+⏱️ *Importante:* tu ticket debe ser de los últimos *${DIAS_VALIDEZ} días*.
 
-Envíalo cuando lo tengas.`,
+¡Envíalo cuando lo tengas!`,
 
   bienvenidaConocido: (username, rondasHoy) => {
     if (rondasHoy >= RONDAS_MAX) {
-      return `Hola, *${username}*.
+      return `¡Hola, *${username}*! 🏆
 
 Ya completaste tus *${RONDAS_MAX} rondas* de hoy. Se reinician mañana a *medianoche (hora CDMX)*.
 
-Para ver tu posición, escribe *PUNTOS*.`;
+📊 Mira tu posición → *PUNTOS*`;
     }
     if (rondasHoy === 0) {
-      return `Hola, *${username}*.
+      return `¡Hola, *${username}*! 👋
 
 Tienes *${RONDAS_MAX} rondas* disponibles hoy.
 
-Envía un folio para comenzar, o escribe *PUNTOS* para ver tu posición.`;
+🎫 Envía un folio para comenzar, o escribe *PUNTOS* para ver tu posición.`;
     }
-    return `Hola, *${username}*.
+    return `¡Hola, *${username}*! 👋
 
 Llevas *${rondasHoy}/${RONDAS_MAX}* rondas hoy. Te quedan *${RONDAS_MAX - rondasHoy}*.
 
-Envía tu siguiente folio, o escribe *PUNTOS* para ver tu posición.`;
+🎫 Envía tu siguiente folio, o escribe *PUNTOS* para ver tu posición.`;
   },
 
   bienvenidaReEngagement: (username) =>
-`*${username}*, queremos verte de regreso.
+`*${username}*, queremos verte de regreso 👀
 
 La campaña sigue activa y hay *81 premios* en juego. Termina el *${CAMPAIGN_END_DATE}*.
 
-Envía un folio para jugar, o escribe *PUNTOS* para ver tu posición.`,
+🎫 Envía un folio para jugar, o escribe *PUNTOS* para ver tu posición.`,
 
   bienvenidaNuevoDia: (username) =>
-`Hola, *${username}*.
+`☀️ ¡Hola, *${username}*!
 
 Tienes *${RONDAS_MAX} rondas nuevas* para hoy. Envía un folio cuando estés listo.`,
 
   atajoConocido: (username, rondasHoy) =>
-`Envíame el folio, *${username}*.
+`Envíame el folio, *${username}* 🎫
 
 ${rondasHoy < RONDAS_MAX
   ? `Llevas *${rondasHoy}/${RONDAS_MAX}* rondas hoy. Te quedan *${RONDAS_MAX - rondasHoy}*.`
-  : `Ya completaste tus *${RONDAS_MAX} rondas* de hoy.\nSe reinician mañana a *medianoche (hora CDMX)*.`}`,
+  : `Ya completaste tus *${RONDAS_MAX} rondas* de hoy 🏆\nSe reinician mañana a *medianoche (hora CDMX)*.`}`,
 
   folioOkPideNombre: (storeName, brand) => {
     const tienda = storeName ? `*${brand}* — ${storeName}` : "*Grupo Nutrisa*";
-    return `Folio válido. Compra realizada en ${tienda}.
+    return `✅ Folio válido — compra realizada en ${tienda} 🥑
 
-*Último paso:* elige tu *apodo* para el ranking.
+🎯 *Último paso:* elige tu *apodo* para el ranking.
 
 Reglas: 3 a 20 caracteres, sin espacios y sin acentos. Solo letras, números y guion bajo.
 
 Ejemplos: *Goleador26*, *NutriFan*, *MoyoQueen*, *ChilimRey*.
 
-Ese apodo te identificará durante toda la campaña. Elígelo con cuidado.`;
+💡 Ese apodo te identificará durante toda la campaña. Elígelo con cuidado.`;
   },
 
   usernameInvalido: (razon, sugerencia) =>
-`Ese apodo no es válido.
+`Ese apodo no es válido 😅
 *${razon}*
 
 ${sugerencia ? `Te sugerimos *${sugerencia}*, o envía otro.` : "Envía otro nombre."}
 
-Si deseas empezar de nuevo, escribe *REINICIAR*.`,
+💡 Si deseas empezar de nuevo, escribe *REINICIAR*.`,
 
   usernameProfanity: (sugerencia) =>
-`Ese apodo no es válido.
+`Ese apodo no es válido 😅
 *Nuestro filtro lo identificó como inapropiado o contiene una palabra restringida.*
 
 ${sugerencia ? `Te sugerimos *${sugerencia}*, o envía otro.` : "Envía otro apodo."}
 
-Si consideras que es un error, escribe *SOPORTE* y proporciona tu nombre real para revisarlo.`,
+💡 Si consideras que es un error, escribe *SOPORTE* y proporciona tu nombre real para revisarlo.`,
 
   usernameTomado: (sugerencia) =>
-`Ese apodo ya está en uso.
+`Ese apodo ya está en uso 😅
 
-Cada apodo es único. El primer fanático que lo elige se lo queda.
+Cada apodo es único — el primer fanático que lo elige se lo queda.
 
 Te sugerimos *${sugerencia}*, o envía uno propio.
 
-Sugerencia: agregar números o tu marca favorita ayuda. Ejemplos: *NutriQueen*, *MoyoKing*, *ChilimChef*.`,
+🎯 Sugerencia: agregar números o tu marca favorita ayuda — *NutriQueen*, *MoyoKing*, *ChilimChef*`,
 
   registroCompleto: (username, magicLink, rondasHoy) =>
-`Listo, *${username}*. Ya eres oficial *Fanático del Sabor*.
+`¡Listo, *${username}*! 🎉 Ya eres oficial *Fanático del Sabor*.
 
-*Toca aquí para jugar:*
+🎮 *Toca aquí para jugar:*
 ${magicLink}
 
-El link es solo tuyo. Expira en *1 hora* y funciona *una sola vez*.
+⏱️ El link es solo tuyo. Expira en *1 hora* y funciona *una sola vez*.
 
 Vas en la ronda *${rondasHoy}/${RONDAS_MAX}* de hoy.`,
 
   folioAdicional: (username, rondaNum, magicLink) =>
-`Otra ronda lista, *${username}*.
+`✅ ¡Otra ronda lista, *${username}*!
 
-*Ronda ${rondaNum}/${RONDAS_MAX}* — toca aquí:
+🎮 *Ronda ${rondaNum}/${RONDAS_MAX}* — toca aquí:
 ${magicLink}
 
 ${rondaNum < RONDAS_MAX
-  ? `Te quedan *${RONDAS_MAX - rondaNum} rondas* hoy. A subir en el ranking.`
-  : `Última ronda de hoy. Mañana a medianoche se reinician.`}`,
+  ? `Te quedan *${RONDAS_MAX - rondaNum} rondas* hoy. ¡A subir en el ranking!`
+  : `🔥 Última ronda de hoy. Mañana a medianoche se reinician.`}`,
 
   reenvioLink: (username, magicLink) =>
-`Aún no terminaste tu ronda actual, *${username || "Fanático"}*.
+`Aún no terminaste tu ronda actual, *${username || "Fanático"}* 🎮
 
 Te reenvío el link para que completes los 4 minijuegos:
 ${magicLink}
 
-Cuando completes esa ronda, envíame el folio nuevo y lo registraré.
+✅ Cuando completes esa ronda, envíame el folio nuevo y lo registraré.
 
-Tienes hasta *15 minutos* para terminar antes de que el folio se libere automáticamente.
-Si recibiste varios links, *usa el más reciente* — los anteriores ya no funcionan.`,
+⏱️ Tienes hasta *15 minutos* para terminar antes de que el folio se libere automáticamente.
+🔄 Si recibiste varios links, *usa el más reciente* — los anteriores ya no funcionan.`,
 
   rondaCompletada: (username, score, rondasHoy, puntosTotal, posicion, totalJugadores) => {
     let posLine = "";
     if (posicion && totalJugadores) {
-      posLine = `\nVas en el lugar *#${posicion}* de ${fmt(totalJugadores)}.`;
+      posLine = `\n🏆 Vas en el lugar *#${posicion}* de ${fmt(totalJugadores)}`;
     }
-    return `Cerraste la ronda, *${username}*.
+    return `🎉 *¡Cerraste la ronda, ${username}!*
 
-Esta partida: *${fmt(score)} pts*
-Total acumulado: *${fmt(puntosTotal)} pts*${posLine}
+⚽ Esta partida: *${fmt(score)} pts*
+🔥 Total acumulado: *${fmt(puntosTotal)} pts*${posLine}
 
-Te quedan *${RONDAS_MAX - rondasHoy} rondas* hoy. Envía otro folio para seguir.`;
+Te quedan *${RONDAS_MAX - rondasHoy} rondas* hoy — envía otro folio para seguir.`;
   },
 
   rondaCompletadaMaxDia: (username, score, puntosTotal, posicion, totalJugadores) => {
     let posLine = "";
     if (posicion && totalJugadores) {
-      posLine = `\nVas en el lugar *#${posicion}* de ${fmt(totalJugadores)}.`;
+      posLine = `\n🏆 Vas en el lugar *#${posicion}* de ${fmt(totalJugadores)}`;
     }
-    return `Completaste todas tus rondas del día, *${username}*.
+    return `🏆 *¡Completaste todas tus rondas del día, ${username}!*
 
-Última ronda: *${fmt(score)} pts*
-Total del día: *${fmt(puntosTotal)} pts*${posLine}
+⚽ Última ronda: *${fmt(score)} pts*
+🔥 Total del día: *${fmt(puntosTotal)} pts*${posLine}
 
-Las rondas se reinician mañana a *medianoche (hora CDMX)*.
+🌅 Las rondas se reinician mañana a *medianoche (hora CDMX)*.
 
-Comparte la campaña con tus amigos para que jueguen, pero *no compartas tus folios*: cada uno es único.`;
+💡 Comparte la campaña con tus amigos para que jueguen — pero *no compartas tus folios* (cada uno es único).`;
   },
 
   maxRondas: (username) =>
-`Ya completaste tus *${RONDAS_MAX} rondas* de hoy, *${username}*.
+`Ya completaste tus *${RONDAS_MAX} rondas* de hoy, *${username}* 🏆
 
-Guarda ese folio. Sigue siendo válido por *${DIAS_VALIDEZ} días*. Puedes canjearlo mañana.
+Guarda ese folio — sigue siendo válido por *${DIAS_VALIDEZ} días*. Puedes canjearlo mañana.
 
-Las rondas se reinician a *medianoche (hora CDMX)*.
+🌅 Las rondas se reinician a *medianoche (hora CDMX)*.
 
-Para ver tu posición, escribe *PUNTOS*.`,
+📊 Mira tu posición → *PUNTOS*`,
 
   folioError: (error) => {
     const msgs = {
       formato:
-`No identifiqué un folio válido en tu mensaje.
+`🤔 No identifiqué un folio válido en tu mensaje.
 
 Necesito:
 ↳ *21 dígitos* exactos
 ↳ Que empiece con *84*
 ↳ Solo los números (sin fotografía, sin texto adicional)
 
-Si no sabes dónde está, escribe *FOLIO* y te indico.
+¿No sabes dónde está? Escribe *FOLIO* y te indico 📋
 
-Si estabas escribiendo otra cosa, escribe *AYUDA* para ver las opciones.`,
+💡 Si estabas escribiendo otra cosa, escribe *AYUDA* para ver las opciones.`,
 
       prefijo:
-`Tu folio debe empezar con *84*.
+`Tu folio debe empezar con *84* 📋
 
 Si empieza con otro número, no es de las marcas participantes.
 
 Si lo copiaste incorrectamente, revisa el ticket e inténtalo de nuevo.
 
-Las marcas participantes son: Nutrisa, Moyo, Cielito Café y Chilim Balam. Escribe *TIENDAS* para más información.`,
+💡 Las marcas participantes son: Nutrisa, Moyo, Cielito Café y Chilim Balam. Escribe *TIENDAS* para más información.`,
 
       invalid_format:
 `El folio no tiene el formato correcto.
@@ -1303,179 +1303,179 @@ Debe ser *21 dígitos* exactos, empezando con *84*.
 
 Si copiaste el ticket entero, envíame *únicamente* los dígitos.
 
-Escribe *FOLIO* si necesitas ayuda para ubicarlo en tu ticket.`,
+💡 Escribe *FOLIO* si necesitas ayuda para ubicarlo en tu ticket.`,
 
       invalid_empresa:
 `Ese folio no es de una marca participante.
 
 Solo aceptamos folios de: *Nutrisa*, *Moyo*, *Cielito Café* y *Chilim Balam*.
 
-Escribe *TIENDAS* para más detalle.`,
+💡 Escribe *TIENDAS* para más detalle.`,
 
       invalid_date:
-`La fecha en ese folio no es válida.
+`La fecha en ese folio no es válida 🤔
 
 Revisa que hayas copiado todos los dígitos correctamente.
 
-Si consideras que tu ticket está dañado, escribe *SOPORTE*.`,
+💡 Si consideras que tu ticket está dañado, escribe *SOPORTE*.`,
 
       unknown_store:
-`Esa tienda no aparece en la lista de participantes.
+`Esa tienda no aparece en la lista de participantes 🧐
 
 ¿Es un ticket de Nutrisa, Moyo, Cielito Café o Chilim Balam?
-Si lo es, el ticket podría estar dañado. Intenta con otro.
+Si lo es, el ticket podría estar dañado — intenta con otro.
 
-Si consideras que es un error nuestro, escribe *SOPORTE*.`,
+💡 ¿Consideras que es un error nuestro? Escribe *SOPORTE*.`,
 
       expired:
-`Ese ticket tiene más de *${DIAS_VALIDEZ} días*.
+`😕 Ese ticket tiene más de *${DIAS_VALIDEZ} días*.
 
 Los tickets son válidos por *${DIAS_VALIDEZ} días* desde la compra. Después no pueden canjearse.
 
-Si tienes uno más reciente, envíalo.
+🎫 ¿Tienes uno más reciente? Envíalo.
 
-Sugerencia: envía tu folio el mismo día de la compra para evitar que se venza.`,
+💡 *Sugerencia:* envía tu folio el mismo día de la compra para evitar que se venza.`,
 
       not_yet_valid:
-`La fecha del ticket aún no llega.
+`La fecha del ticket aún no llega 🤔
 
-Revisa la fecha en tu ticket. Debe ser de *hoy o ayer*.
+Revisa la fecha en tu ticket — debe ser de *hoy o ayer*.
 
-Si la fecha es correcta y aun así da error, escribe *SOPORTE*.`,
+💡 Si la fecha es correcta y aun así da error, escribe *SOPORTE*.`,
 
       date_too_early:
-`Ese ticket es anterior al inicio de la campaña.
+`Ese ticket es anterior al inicio de la campaña 📅
 
 *Fanáticos del Sabor* arrancó recientemente. Solo cuentan tickets desde esa fecha.
 
-Si tienes uno más reciente, envíalo.`,
+🎫 ¿Tienes uno más reciente? Envíalo.`,
 
       campaign_ended:
-`*Fanáticos del Sabor* ya finalizó.
+`🏁 *Fanáticos del Sabor* ya finalizó.
 
-La campaña concluyó. Gracias por jugar.
+La campaña concluyó. ¡Gracias por jugar! ⚽
 Consulta los ganadores en ${SITE_URL}.`,
 
       folio_too_low:
-`Ese folio es anterior al inicio de la campaña.
+`Ese folio es anterior al inicio de la campaña 📋
 
 Solo se aceptan compras realizadas durante *Fanáticos del Sabor*.
 
-Si tienes uno más reciente, envíalo.`,
+🎫 ¿Tienes uno más reciente? Envíalo.`,
 
       already_used:
-`Ese folio ya fue canjeado.
+`🔒 Ese folio ya fue canjeado.
 
 Cada folio se usa una sola vez, por una sola persona.
 
-Si lo compartiste con alguien:
-↳ Esa persona pudo haberlo usado antes que tú.
-↳ Escribe *SOPORTE* si consideras que fue un robo.
+⚠️ Si lo compartiste con alguien:
+↳ Esa persona pudo haberlo usado antes que tú
+↳ Escribe *SOPORTE* si consideras que fue un robo
 
-*Tu folio es tu llave personal.* No lo compartas.
+💡 *Tu folio es tu llave personal.* No lo compartas.
 
-Si tienes otro ticket, envíalo.`,
+🎫 ¿Tienes otro ticket? Envíalo.`,
 
       ticket_limit_reached:
-`Ya completaste tus *${RONDAS_MAX} rondas* de hoy.
+`Ya completaste tus *${RONDAS_MAX} rondas* de hoy 🏆
 Cada persona tiene *${RONDAS_MAX} rondas diarias*.
 
-Se reinician a *medianoche (hora CDMX)*.
-La hora de tu celular no aplica: siempre es hora de México.
+🌅 Se reinician a *medianoche (hora CDMX)*.
+La hora de tu celular no aplica — siempre es hora de México.
 
-Guarda tu folio: sigue siendo válido por ${DIAS_VALIDEZ} días.`,
+💡 Guarda tu folio: sigue siendo válido por ${DIAS_VALIDEZ} días.`,
 
       session_active:
-`Aún no terminaste tu ronda actual.
+`Aún no terminaste tu ronda actual 🎮
 
-Entra a *${SITE_URL}* con el link que te envié y *completa los 4 minijuegos*.
+👉 Entra a *${SITE_URL}* con el link que te envié y *completa los 4 minijuegos*.
 
 Cuando completes esa ronda, podrás canjear otro folio.
 
-Si no completas en 15 minutos, el folio se libera automáticamente.
+(Si no completas en 15 minutos, el folio se libera automáticamente.)
 
-Si perdiste el link, envíame de nuevo el folio que ya canjeaste para reenviártelo.`,
+💡 ¿Perdiste el link? Envíame de nuevo el folio que ya canjeaste para reenviártelo.`,
 
       rate_limited:
-`Estás enviando folios demasiado rápido.
+`Estás enviando folios demasiado rápido 🛑
 
 Espera *1 minuto* y vuelve a intentarlo.
 
-Si consideras que es un error, escribe *SOPORTE*.`,
+💡 Si consideras que es un error, escribe *SOPORTE*.`,
 
       invalid_user_id:
-`Tuvimos un problema técnico con tu cuenta.
+`Tuvimos un problema técnico con tu cuenta 😞
 *No es algo que hicieras mal.* Escribe *REINICIAR* para empezar de nuevo.
 
 Si el problema persiste, escribe *SOPORTE*.`,
 
       missing_user_id:
-`Tuvimos un problema técnico con tu cuenta.
+`Tuvimos un problema técnico con tu cuenta 😞
 *No es algo que hicieras mal.* Escribe *REINICIAR* para empezar de nuevo.
 
 Si el problema persiste, escribe *SOPORTE*.`,
 
       unauthorized:
-`Hubo un problema con tu sesión.
+`Hubo un problema con tu sesión 😞
 Escribe *REINICIAR* para empezar de nuevo.
 
 Si el problema persiste, escribe *SOPORTE*.`,
 
       internal_error:
-`Tuvimos un problema técnico.
+`Tuvimos un problema técnico 😞
 *No es algo que hicieras mal.* Inténtalo de nuevo en 1 a 2 minutos.
 
 Si el problema persiste, escribe *SOPORTE*.`,
     };
     return msgs[error] || `No pude validar ese folio. Verifica que esté completo y envíalo de nuevo.
 
-Si consideras que algo no está bien, escribe *SOPORTE*.`;
+💡 Si consideras que algo no está bien, escribe *SOPORTE*.`;
   },
 
   errorRegistro: () =>
-`Tuvimos un problema técnico al registrarte.
+`Tuvimos un problema técnico al registrarte 😞
 *No es algo que hicieras mal.* Intenta de nuevo en 1 a 2 minutos.
 
 Si el problema persiste, escribe *SOPORTE*.`,
 
   errorEdgeFunction: () =>
-`Estamos teniendo un problema temporal.
+`Estamos teniendo un problema temporal 🙏
 Inténtalo de nuevo en 1 a 2 minutos.
 
 Si sigue fallando, escribe *SOPORTE*.`,
 
   servidorSaturado: () =>
-`Estamos recibiendo mucho tráfico.
+`🔥 Estamos recibiendo mucho tráfico.
 Inténtalo de nuevo en *30 segundos*. Tu folio no se ha perdido.
 
-No es necesario reenviarlo. Espera y te responderemos cuando se libere.`,
+(No es necesario reenviarlo — espera y te responderemos cuando se libere.)`,
 
   ayuda: (u) =>
-`Soy *Gol*${u ? `, tu apodo es *${u}*` : ""}.
+`👋 Soy *Gol*${u ? `, tu apodo es *${u}*` : ""}.
 
 Esto es lo que puedo hacer:
 
-*Envía un folio* → Jugar una ronda
-*PUNTOS* → Tu puntaje y posición
-*MI LINK* → Reenviar tu último link
-*OTRA RONDA* → Pedir otro folio
-*PREMIOS* → Lo que puedes ganar
-*TIENDAS* → Marcas participantes
-*REGLAS* → Cómo funciona
-*FOLIO* → Dónde está en el ticket
-*REINICIAR* → Empezar de nuevo
+🎫 *Envía un folio* → Jugar una ronda
+📊 *PUNTOS* → Tu puntaje y posición
+🔗 *MI LINK* → Reenviar tu último link
+🎮 *OTRA RONDA* → Pedir otro folio
+🏆 *PREMIOS* → Lo que puedes ganar
+🏪 *TIENDAS* → Marcas participantes
+📋 *REGLAS* → Cómo funciona
+🔍 *FOLIO* → Dónde está en el ticket
+🔄 *REINICIAR* → Empezar de nuevo
 
-*No proceso* fotografías, audios, videos ni stickers.
+⚠️ *No proceso:* fotografías, audios, videos ni stickers.
 
-*SOPORTE* → Hablar con un humano de Grupo Nutrisa.`,
+🆘 *SOPORTE* → Hablar con un humano de Grupo Nutrisa.`,
 
   puntos: (username, stats) => {
     if (!stats || stats.puntos_total === 0 || !stats.posicion) {
-      return `Aún no tienes puntaje, *${username}*.
+      return `📊 Aún no tienes puntaje, *${username}*.
 
-Envía un folio para jugar tu primera ronda y aparecer en el ranking.
+🎫 Envía un folio para jugar tu primera ronda y aparecer en el ranking.
 
-Cada folio equivale a 1 ronda de 4 minijuegos.`;
+💡 Cada folio equivale a 1 ronda de 4 minijuegos.`;
     }
 
     const top3 = (stats.top_3 || []).slice(0, 3);
@@ -1488,121 +1488,121 @@ Cada folio equivale a 1 ronda de 4 minijuegos.`;
     const inTop3 = top3.some(u => u.username === username);
     const youLine = inTop3 ? "" : `\n\nTu lugar: *#${stats.posicion}* de ${fmt(stats.total_jugadores)} jugadores`;
 
-    return `*${username}*, este es tu progreso:
+    return `📊 *${username}*, este es tu progreso:
 
-Total acumulado: *${fmt(stats.puntos_total)} pts*
-Mejor ronda: *${fmt(stats.mejor_ronda)} pts*${youLine}
+⚽ Total acumulado: *${fmt(stats.puntos_total)} pts*
+🎯 Mejor ronda: *${fmt(stats.mejor_ronda)} pts*${youLine}
 
-*Top 3 actual:*
+🏆 *Top 3 actual:*
 ${top3Lines}
 
-Para subir, envía otro folio.`;
+🎫 Para subir, envía otro folio.`;
   },
 
   premios: () =>
-`*81 premios en total* — Fanáticos del Sabor
+`🏆 *81 premios en total* — Fanáticos del Sabor
 
 🥇 *Top 20 del leaderboard*
-↳ Meet & Greet con *La Cotorrisa*
+↳ Meet & Greet con *La Cotorrisa* 🎤
 ↳ El evento del año
 
 🥈 *Top 8 siguientes*
-↳ *Nintendo Switch 2*
+↳ *Nintendo Switch 2* 🎮
 ↳ La consola más buscada de 2026
 
 🥉 *Top 13 siguientes*
-↳ *LEGO Edición Especial*
+↳ *LEGO Edición Especial* 🧱
 ↳ Para coleccionistas
 
 🏅 *Top 40 siguientes*
-↳ *Merchandising firmado por La Cotorrisa*
+↳ *Merchandising firmado por La Cotorrisa* 👕
 ↳ Edición limitada de la campaña
 
-*Cómo subir en el ranking:*
+💪 *Cómo subir en el ranking:*
 ↳ Juega tus *${RONDAS_MAX} rondas diarias*
 ↳ Mejora tu puntaje en cada juego
 ↳ Acumula puntos durante toda la campaña
 
-La campaña termina el *${CAMPAIGN_END_DATE}*.
+🔥 La campaña termina el *${CAMPAIGN_END_DATE}*.
 
-Para ver tu posición, escribe *PUNTOS*.`,
+📊 Para ver tu posición → *PUNTOS*`,
 
   tiendas: () =>
-`*Marcas participantes:*
+`🏪 *Marcas participantes:*
 
-*Nutrisa* — yogurts y helados
-*Moyo* — yogurt helado con toppings
-*Cielito Café* — café y panadería
-*Chilim Balam* — cocina mexicana
+🥑 *Nutrisa* → yogurts y helados
+🍦 *Moyo* → yogurt helado con toppings
+☕ *Cielito Café* → café y panadería
+🌮 *Chilim Balam* → cocina mexicana
 
-Compra en cualquiera, guarda el ticket y envíame el folio dentro de los siguientes *${DIAS_VALIDEZ} días*.
+🎫 Compra en cualquiera → guarda el ticket → envíame el folio dentro de los siguientes *${DIAS_VALIDEZ} días*.
 
-Cada marca cuenta igual para tus puntos.`,
+💡 Cada marca cuenta igual para tus puntos.`,
 
   reglas: () =>
-`*Reglas de la campaña:*
+`📋 *Reglas de la campaña:*
 
-*1 folio = 1 ronda* (4 minijuegos)
-Máximo *${RONDAS_MAX} rondas* al día
-Ticket válido por *${DIAS_VALIDEZ} días* desde la compra
-Los puntos *se acumulan* durante toda la campaña
-Las rondas se reinician a *medianoche (hora CDMX)*
-Cada folio se usa *una sola vez*. No lo compartas.
-*Un WhatsApp equivale a una cuenta.* No se permiten cuentas duplicadas.
+🎫 *1 folio = 1 ronda* (4 minijuegos)
+🎮 Máximo *${RONDAS_MAX} rondas* al día
+📅 Ticket válido por *${DIAS_VALIDEZ} días* desde la compra
+🏆 Los puntos *se acumulan* durante toda la campaña
+🌅 Las rondas se reinician a *medianoche (hora CDMX)*
+🔒 Cada folio se usa *una sola vez* — no lo compartas
+👤 *Un WhatsApp equivale a una cuenta* — no se permiten cuentas duplicadas
 
-La campaña termina el *${CAMPAIGN_END_DATE}*.
+📅 La campaña termina el *${CAMPAIGN_END_DATE}*.
 
-Si algo no queda claro, escribe *AYUDA* o *SOPORTE*.`,
+💡 Si algo no queda claro, escribe *AYUDA* o *SOPORTE*.`,
 
   dondeFolio: () =>
-`*Cómo encontrar tu folio:*
+`📋 *Cómo encontrar tu folio:*
 
-Mira la *parte superior del ticket*.
-Busca *21 dígitos seguidos*.
-Siempre empieza con *84*.
-Está antes de la lista de productos.
+🧾 Mira la *parte superior del ticket*
+🔢 Busca *21 dígitos seguidos*
+🟢 Siempre empieza con *84*
+📍 Está antes de la lista de productos
 
-Te envié una imagen de ejemplo. Fíjate en los números marcados.
+📷 Te envié una imagen de ejemplo arriba — fíjate en los números marcados.
 
-*Importante:*
-↳ No envíes la fotografía. No puedo leerla.
-↳ No envíes el ticket completo escrito.
-↳ Envía únicamente los 21 números.
+⚠️ *Importante:*
+↳ ❌ No envíes la fotografía — no puedo leerla
+↳ ❌ No envíes el ticket completo escrito
+↳ ✅ Envía únicamente los 21 números
 
-Consejo: en iOS y Android, mantén presionado el número en la foto de tu ticket para copiarlo.`,
+💡 *Consejo:* en iOS y Android, mantén presionado el número en la foto de tu ticket para copiarlo.`,
 
   gracias: (u) =>
-`Con gusto${u ? `, *${u}*` : ""}.
+`¡Con gusto${u ? `, *${u}*` : ""}! ⚽
 
-Si necesitas algo más, escribe *AYUDA*.`,
+💡 Si necesitas algo más, escribe *AYUDA*.`,
 
   noTexto: () =>
-`Soy un bot de texto. No proceso fotografías, audios, videos ni stickers.
+`😅 Soy un bot de texto — no proceso fotografías, audios, videos ni stickers.
 
-*Si querías enviar tu folio:*
-↳ Cópialo directo del ticket (los *21 números*).
-↳ Pégalo aquí como texto.
-↳ Si no sabes cómo, escribe *FOLIO*.
+🎫 *¿Querías enviar tu folio?*
+↳ Cópialo directo del ticket (los *21 números*)
+↳ Pégalo aquí como texto
+↳ ¿No sabes cómo? Escribe *FOLIO*
 
-*Si querías otra cosa:*
-↳ Escribe *AYUDA* para ver todas las opciones.
-↳ Escribe *SOPORTE* si necesitas hablar con un humano.`,
+💬 *¿Querías otra cosa?*
+↳ Escribe *AYUDA* para ver todas las opciones
+↳ Escribe *SOPORTE* si necesitas hablar con un humano`,
 
   pedirFolio: () =>
-`Para continuar necesito tu *folio*.
+`Para continuar necesito tu *folio* 🎫
 
-*Cómo encontrarlo:*
+📍 *Cómo encontrarlo:*
 ↳ 21 dígitos
 ↳ Empieza con *84*
 ↳ Está en la parte superior del ticket
 
-Cópialo y pégalo directo. No envíes la fotografía.
+✅ *Cópialo y pégalo directo* — no envíes la fotografía.
 
-Si tienes dudas, escribe *FOLIO* para más detalles.
-Si necesitas otra cosa, escribe *AYUDA*.`,
+¿Tienes dudas? Escribe *FOLIO* para más detalles.
+¿Necesitas otra cosa? Escribe *AYUDA*.`,
 
   soporteIntro: () =>
-`*Te pondremos en contacto con un humano de Grupo Nutrisa.*
+`🆘 *Te pondremos en contacto con un humano de Grupo Nutrisa.*
 
 Descríbenos en una sola frase qué necesitas. Por ejemplo:
 ↳ "Mi folio está dañado"
@@ -1611,53 +1611,53 @@ Descríbenos en una sola frase qué necesitas. Por ejemplo:
 ↳ "Quiero reportar un problema"
 ↳ Cualquier otro asunto
 
-Un humano te contestará en *menos de 24 horas* (lunes a viernes, 9:00 a 18:00 CDMX).
+📩 Un humano te contestará en *menos de 24 horas* (lunes a viernes, 9:00 a 18:00 CDMX).
 
-Sugerencia: si no has recibido tu link, envía otro folio para generar uno nuevo.
+💡 Sugerencia: si no has recibido tu link, envía otro folio para generar uno nuevo.
 
-Si cambias de opinión, escribe *CANCELAR*.`,
+(Si cambias de opinión, escribe *CANCELAR*.)`,
 
   soporteConfirmado: () =>
-`*Reporte recibido.*
+`✅ *Reporte recibido.*
 
 Un humano de Grupo Nutrisa revisará tu caso y te contactará pronto.
 
-Puedes seguir jugando si tienes otro folio.`,
+🎫 Puedes seguir jugando si tienes otro folio.`,
 
   soporteCancelado: () =>
-`Listo, cancelado.
+`Listo, cancelado 👌
 
 Si cambias de opinión, escribe *SOPORTE* otra vez.
 
-Si necesitas otra cosa, escribe *AYUDA*.`,
+¿Necesitas otra cosa? Escribe *AYUDA*.`,
 
   miLink: (username, magicLink) =>
-`Aquí está tu link, *${username}*:
+`🔗 Aquí está tu link, *${username}*:
 
 ${magicLink}
 
-Expira en *1 hora*. Si ya expiró, envía otro folio para generar uno nuevo.`,
+⏱️ Expira en *1 hora*. Si ya expiró, envía otro folio para generar uno nuevo.`,
 
   miLinkNoActivo: (username) =>
-`No tienes una ronda activa, *${username || "Fanático"}*.
+`No tienes una ronda activa, *${username || "Fanático"}* 🤔
 
-Envía un folio para iniciar una nueva ronda. Te generaré un link al momento.
+🎫 Envía un folio para iniciar una nueva ronda — te generaré un link al momento.
 
-Si solo querías ver tu puntaje, escribe *PUNTOS*.`,
+📊 Si solo querías ver tu puntaje, escribe *PUNTOS*.`,
 
   otraRonda: (username, rondasHoy) => {
     if (rondasHoy >= RONDAS_MAX) {
-      return `Ya completaste tus *${RONDAS_MAX} rondas* de hoy, *${username}*.
+      return `Ya completaste tus *${RONDAS_MAX} rondas* de hoy, *${username}* 🏆
 
-Se reinician mañana a *medianoche (hora CDMX)*.
+🌅 Se reinician mañana a *medianoche (hora CDMX)*.
 
-Para ver tu posición, escribe *PUNTOS*.`;
+📊 Mira tu posición → *PUNTOS*`;
     }
-    return `Perfecto, *${username}*.
+    return `¡Perfecto, *${username}*! 🔥
 
-Compra otro producto en *Nutrisa, Moyo, Cielito Café o Chilim Balam*. Cada compra es una oportunidad de subir en el ranking.
+Compra otro producto en *Nutrisa, Moyo, Cielito Café o Chilim Balam* — cada compra es una oportunidad de subir en el ranking.
 
-Envía los 21 dígitos del folio de tu nuevo ticket.
+🎫 Envía los 21 dígitos del folio de tu nuevo ticket.
 
 Te quedan *${RONDAS_MAX - rondasHoy} rondas* hoy.`;
   },
