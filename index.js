@@ -1,20 +1,42 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRISA — BOT v3.38 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRISA — BOT v3.39 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutrisa · WhatsApp-native                       ║
 // ║                                                                              ║
-// ║  v3.38: Tono formal, ortografía revisada, instrucciones claras               ║
+// ║  v3.39: Short links /j/CODE — fix tap único en WhatsApp iOS                  ║
+// ║  v3.38: Copy review (emojis + flechas + lenguaje formal sin slang)           ║
 // ║  v3.37: Last-resort BD recovery en handlers + UX continuidad                 ║
 // ║  v3.36: pendingFolio en BD + regex 21 dígitos estricto                       ║
 // ║  v3.35: Caché stale-aware + retry robusto + ortografía Nutrisa               ║
 // ║  v3.34: Multi-réplica safe — dedupe distribuido + fase en BD                 ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 //
+// ─── NUEVO EN v3.39 (22 may 2026 — short links) ─────────────────────────────
+// Reemplaza el magic link largo de Supabase por un short link propio:
+//   Antes: https://selxawolsjukpvzisipm.supabase.co/auth/v1/verify?token=... (250+ chars)
+//   Ahora: https://fanaticosdelsabor.com/j/AB3K9X (40 chars)
+//
+// Flujo:
+//   1. Bot recibe magic link de la edge function wa-auth
+//   2. crearShortLink() genera código de 6 chars y guarda en BD (wa_short_links)
+//   3. Bot envía short URL al usuario
+//   4. Usuario toca link → Netlify redirect → bot endpoint GET /j/:code
+//   5. Bot reclama el código → 302 al magic link real → frontend
+//
+// Razón del cambio: WhatsApp in-app browser (WKWebView) en iOS falla al primer
+// tap con URLs largas (200+ chars con muchos query params). Con el short link,
+// el primer tap funciona consistentemente.
+//
+// 4 puntos actualizados: registroCompleto, folioAdicional, reenvioLink, miLink
+// Fallback automático: si crearShortLink falla, se envía el magic link directo.
+//
+// Mohamed configuró el Netlify redirect: /j/* → Railway bot /j/*
+//
 // ─── NUEVO EN v3.38 (22 may 2026 — copy review) ─────────────────────────────
 // Pasada completa a todos los mensajes para tono más formal y profesional:
 // - Eliminado slang: "qué onda" → "hola", "va" → "perfecto", "cáele" → "compra"
 // - Eliminado "ahorita" → "ahora", "manda" → "envía"
 // - Comandos siempre en MAYÚSCULAS (REINICIAR, CANCELAR, SOPORTE, etc)
-// - Reducidos emojis decorativos, mantenidos los funcionales (🥇🥈🥉)
+// - Mantenidos emojis funcionales y decorativos + flechas ↳ + formato visual
 // - Ortografía revisada en todos los mensajes
 // - Instrucciones más claras dirigiendo al protocolo (palabras completas)
 //
@@ -159,7 +181,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.38";
+const VERSION         = "3.39";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -693,6 +715,29 @@ async function waAuth(action, params = {}, trace) {
     recordError(`waauth:${action}`, e);
     log.error(trace, `waAuth ${action} ${e.isTimeout ? 'TIMEOUT' : 'ERR'}:`, e.message);
     return { error: "edge_function_error", detail: e.message };
+  }
+}
+
+// ─── SHORT LINKS (v3.39) ────────────────────────────────────────────────────
+const SHORT_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sin 0/O/1/I para evitar confusión
+function genShortCode(len = 6) {
+  return Array.from({ length: len }, () =>
+    SHORT_CHARS[Math.floor(Math.random() * SHORT_CHARS.length)]
+  ).join("");
+}
+
+async function crearShortLink(userId, magicLinkUrl, trace) {
+  try {
+    const code = genShortCode();
+    await sbRpc("upsert_short_link", {
+      p_code:       code,
+      p_user_id:    userId,
+      p_magic_link: magicLinkUrl,
+    }, trace);
+    return `${SITE_URL}/j/${code}`;
+  } catch (e) {
+    log.warn(trace, "crearShortLink falló — usando magic link directo:", e.message);
+    return magicLinkUrl; // fallback: enviar link largo si algo falla
   }
 }
 
@@ -1934,7 +1979,8 @@ async function procesarMensajeCore(tel, texto, trace) {
     }
     const linkRes = await waAuth("get_link", { phone: tel }, trace).catch(() => null);
     if (linkRes?.ok && linkRes.magic_link) {
-      return enviar(tel, M.miLink(_muser || "Fanático", linkRes.magic_link), trace);
+      const shortMiLink = await crearShortLink(userId || _muid, linkRes.magic_link, trace);
+      return enviar(tel, M.miLink(_muser || "Fanático", shortMiLink), trace);
     }
     return enviar(tel, M.miLinkNoActivo(_muser), trace);
   }
@@ -2115,7 +2161,8 @@ async function procesarMensajeCore(tel, texto, trace) {
       return enviar(tel, `Listo, *${finalUsername}*.\n\nVe a *${SITE_URL}* para entrar a jugar.\nRonda *${rondaNum}* de *${RONDAS_MAX}* hoy.`, trace);
     }
     log.info(trace, `Magic link generado: ${maskLink(regRes.magic_link)}`);
-    return enviar(tel, M.registroCompleto(finalUsername, regRes.magic_link, rondaNum), trace);
+    const shortReg = await crearShortLink(regRes.user_id || userId, regRes.magic_link, trace);
+    return enviar(tel, M.registroCompleto(finalUsername, shortReg, rondaNum), trace);
   }
 
   const looksLikeFolio = /^\d{10,}$/.test(texto.replace(/\s/g, ""));
@@ -2203,7 +2250,8 @@ async function procesarMensajeCore(tel, texto, trace) {
           if (linkRes?.magic_link) {
             metrics.session_active_relinks++;
             log.info(trace, `Re-enviando magic link: ${maskLink(linkRes.magic_link)}`);
-            return enviar(tel, M.reenvioLink(username, linkRes.magic_link), trace);
+            const shortRelink = await crearShortLink(userId, linkRes.magic_link, trace);
+            return enviar(tel, M.reenvioLink(username, shortRelink), trace);
           }
           log.warn(trace, `session_active sin link — fallback a mensaje de texto`);
         }
@@ -2230,7 +2278,8 @@ async function procesarMensajeCore(tel, texto, trace) {
         return enviar(tel, `Folio registrado, *${username}*.\nVe a *${SITE_URL}* para jugar.\nRonda *${rondaParaMostrar}* de *${RONDAS_MAX}* hoy.`, trace);
       }
       log.info(trace, `Magic link generado: ${maskLink(linkRes.magic_link)}`);
-      return enviar(tel, M.folioAdicional(username, rondaParaMostrar, linkRes.magic_link), trace);
+      const shortFolio = await crearShortLink(userId, linkRes.magic_link, trace);
+      return enviar(tel, M.folioAdicional(username, rondaParaMostrar, shortFolio), trace);
     }
 
     const storeInfo = getStoreFromFolio(folio);
@@ -2399,6 +2448,33 @@ function cleanupMaps() {
     log.info(null, `🧹 Cleanup: sesiones=${cs}, locks=${cl}, dedup=${cd}, out=${co}, in=${ci}, ip=${cip}`);
   }
 }
+
+// ─── SHORT LINK REDIRECT (v3.39) ─────────────────────────────────────────────
+// Mohamed ya configuró Netlify: /j/* → https://gol-nutriza-production.up.railway.app/j/*
+// Este endpoint reclama el código y redirige al magic link real (302)
+app.get("/j/:code", async (req, res) => {
+  const code = (req.params.code || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+  const trace = `jlink-${code}`;
+  if (!code) {
+    log.warn(trace, "Short link sin código");
+    return res.redirect(302, `${SITE_URL}/?link=invalid`);
+  }
+  try {
+    const result = await sbRpc("claim_short_link", { p_code: code }, trace);
+    const magicUrl = result?.claim_short_link || result;
+    if (!magicUrl || typeof magicUrl !== "string" || !magicUrl.startsWith("http")) {
+      log.warn(trace, `Short link inválido/expirado/usado: ${code}`);
+      metrics.short_link_miss = (metrics.short_link_miss || 0) + 1;
+      return res.redirect(302, `${SITE_URL}/?link=expired`);
+    }
+    log.info(trace, `Short link OK → ${maskLink(magicUrl)}`);
+    metrics.short_link_hit = (metrics.short_link_hit || 0) + 1;
+    return res.redirect(302, magicUrl);
+  } catch (e) {
+    log.error(trace, "Error en short link redirect:", e.message);
+    return res.redirect(302, `${SITE_URL}/?link=error`);
+  }
+});
 
 // ─── WEBHOOK ────────────────────────────────────────────────────────────────
 app.get("/webhook", (req, res) => {
