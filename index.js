@@ -1,7 +1,8 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRISA — BOT v3.39 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRISA — BOT v3.40 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutrisa · WhatsApp-native                       ║
 // ║                                                                              ║
+// ║  v3.40: Anti-ghost — verificación post-op + soporte respaldo + recordatorios ║
 // ║  v3.39: Short links /j/CODE — fix tap único en WhatsApp iOS                  ║
 // ║  v3.38: Copy review (emojis + flechas + lenguaje formal sin slang)           ║
 // ║  v3.37: Last-resort BD recovery en handlers + UX continuidad                 ║
@@ -9,6 +10,37 @@
 // ║  v3.35: Caché stale-aware + retry robusto + ortografía Nutrisa               ║
 // ║  v3.34: Multi-réplica safe — dedupe distribuido + fase en BD                 ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
+//
+// ─── NUEVO EN v3.40 (22 may 2026 — anti-ghost messages) ──────────────────────
+// Objetivo: que el bot NUNCA diga "OK" cuando algo realmente falló.
+// Fixes invisibles que evitan que usuarios se vayan frustrados:
+//
+// 1) VERIFICACIÓN POST-CLAIM: tras validate_and_claim_ticket, consultar BD
+//    para confirmar que el ticket SÍ se guardó antes de enviar magic link.
+//    Bug original: race con cleanup, ticket borrado pero bot decía éxito.
+//
+// 2) MI LINK validado: antes de mandar magic link, get_ticket_status() verifica
+//    que el ticket sigue en BD. Si no → "tu folio caducó, manda otro" en lugar
+//    de mandar link a sesión que el frontend va a rechazar.
+//
+// 3) OTRA RONDA con state real: si hay current_ticket_code pero no sesión
+//    completa, reenviar link existente en vez de aceptar folio nuevo (que
+//    chocaba con session_active).
+//
+// 4) SOPORTE con respaldo en BD: si Airtable falla, guardar en wa_support_reports
+//    y decir "Reporte recibido" honestamente (la BD sí lo tiene). Antes:
+//    decía "Reporte recibido" siempre, aunque Airtable estuviera caído.
+//
+// 5) RECORDATORIO 30 min: cron interno detecta usuarios con ticket pendiente
+//    sin sesión por 30-35 min y manda nudge. Evita el caso goalsmundial_14
+//    (perdió ticket porque nunca abrió link y cleanup lo borró).
+//
+// 6) cleanup_stuck_sessions FIX (BD): al borrar sesiones, recalcular
+//    wa_puntos_total/wa_rondas_total. Antes dejaba "puntos fantasma" (ej.
+//    AndySG con 930 pts sin sessions).
+//
+// 7) Orphan timeout 60min → 6h (BD): da tiempo a usuarios con problemas de
+//    auth/browser para resolver antes de perder el ticket.
 //
 // ─── NUEVO EN v3.39 (22 may 2026 — short links) ─────────────────────────────
 // Reemplaza el magic link largo de Supabase por un short link propio:
@@ -181,7 +213,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.39";
+const VERSION         = "3.40";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -361,7 +393,7 @@ function persistFase(tel, userId, newPhase, trace) {
   if (!userId || !newPhase) return;
   const persistedPhases = new Set([
     "nuevo", "esperando_folio", "esperando_username", 
-    "activo", "esperando_soporte"
+    "activo", "esperando_soporte", "esperando_soporte_menu"
   ]);
   if (!persistedPhases.has(newPhase)) return;
   sbRpc("update_wa_profile", {
@@ -741,6 +773,23 @@ async function crearShortLink(userId, magicLinkUrl, trace) {
   }
 }
 
+// ─── ANTI-GHOST: verificación de estado real del ticket (v3.40) ──────────────
+// Devuelve { has_ticket, has_session, session_complete, ticket_code, ... }
+// Usado antes de mensajes optimistas (MI LINK, OTRA RONDA, post-registro).
+async function getTicketStatus(userId, code, trace) {
+  if (!userId) return null;
+  try {
+    const result = await sbRpc("get_ticket_status", {
+      p_user_id: userId,
+      p_code: code || null,
+    }, trace);
+    return result;
+  } catch (e) {
+    log.warn(trace, `getTicketStatus error: ${e.message}`);
+    return null;
+  }
+}
+
 // ─── STORES CACHE ───────────────────────────────────────────────────────────
 async function refreshStoresCache() {
   const data = await sbGet("stores?is_active=eq.true&select=sucursal,name,brand,estado&limit=2000");
@@ -980,10 +1029,10 @@ async function bcSyncCanje(folio, tel, username, storeInfo, rondaNum, ip) {
 }
 
 async function bcSyncSoporte(tel, username, mensaje, categoria = "Otro") {
-  if (!AIRTABLE_TOKEN) return;
+  if (!AIRTABLE_TOKEN) return false;
   if (!BC_SOPORTE) {
     log.warn(null, `bcSyncSoporte: BC_SOPORTE_TABLE_ID no configurado en env, skipping`);
-    return;
+    return false;
   }
   try {
     const fields = {
@@ -995,15 +1044,20 @@ async function bcSyncSoporte(tel, username, mensaje, categoria = "Otro") {
       [BCS.FECHA_CREADO]: new Date().toISOString(),
     };
 
-    await fetchTimeout(bcUrl(BC_SOPORTE), {
+    const res = await fetchTimeout(bcUrl(BC_SOPORTE), {
       method: "POST",
       headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}`, "Content-Type": "application/json" },
       body: JSON.stringify({ records: [{ fields }] }),
     }, 8000);
+    if (!res.ok) {
+      throw new Error(`Airtable HTTP ${res.status}`);
+    }
     metrics.soporte_tickets_created++;
     log.info(null, `🆘 Ticket soporte creado: ${tel} - "${String(mensaje).substring(0, 40)}..."`);
+    return true;
   } catch (e) {
     log.warn(null, `bcSyncSoporte fail: ${e.message}`);
+    throw e;  // v3.40: propagar para que el caller pueda registrar respaldo en BD
   }
 }
 
@@ -1646,19 +1700,47 @@ ${top3Lines}
 ¿Tienes dudas? Escribe *FOLIO* para más detalles.
 ¿Necesitas otra cosa? Escribe *AYUDA*.`,
 
+  soporteMenu: () =>
+`🆘 *¿Sobre qué necesitas ayuda?*
+
+*1️⃣* Problemas con el juego, folio, link o registro
+*2️⃣* Dudas sobre productos, tienda, servicio Nutrisa
+
+Responde con *1* o *2*.
+
+(Si cambias de opinión, escribe *CANCELAR*.)`,
+
   soporteIntro: () =>
-`🆘 *Te pondremos en contacto con un humano de Grupo Nutrisa.*
+`🎮 *Te pondremos en contacto con un humano de Grupo Nutrisa.*
 
 Descríbenos en una sola frase qué necesitas. Por ejemplo:
 ↳ "Mi folio está dañado"
 ↳ "Alguien usó mi folio"
 ↳ "No me llega el link"
-↳ "Quiero reportar un problema"
-↳ Cualquier otro asunto
+↳ "El juego no guardó mi puntaje"
 
 📩 Un humano te contestará en *menos de 24 horas* (lunes a viernes, 9:00 a 18:00 CDMX).
 
-💡 Sugerencia: si no has recibido tu link, envía otro folio para generar uno nuevo.
+💡 Sugerencia: si no has recibido tu link, escribe *MI LINK* para generar uno nuevo.
+
+(Si cambias de opinión, escribe *CANCELAR*.)`,
+
+  soporteTiendaContacto: () =>
+`🛍️ *Para dudas de tienda, producto o servicio Nutrisa:*
+
+📞 *Teléfono:* 800 024 0340
+📧 *Correo:* mesadeayuda@nutrisa.com
+🕐 *Horario:* Lunes a viernes, 9:00 a 17:00 hrs
+
+Atención disponible durante la vigencia de la promoción.
+
+🎮 Si tu duda era del juego, escribe *SOPORTE* otra vez y elige la opción *1*.`,
+
+  soporteMenuReintenta: () =>
+`Por favor responde con *1* o *2*:
+
+*1️⃣* Problemas con el juego
+*2️⃣* Dudas de tienda, producto, servicio
 
 (Si cambias de opinión, escribe *CANCELAR*.)`,
 
@@ -1772,7 +1854,7 @@ async function procesarMensajeCore(tel, texto, trace) {
   // Incluimos esperando_soporte para que cambios cross-réplica se reflejen.
   const cacheIsStale = s.cargado && s.lastSeen && 
     (Date.now() - s.lastSeen > CACHE_STALE_MS) &&
-    (s.fase === "activo" || s.fase === "esperando_folio" || s.fase === "nuevo" || s.fase === "desconocido" || s.fase === "esperando_soporte");
+    (s.fase === "activo" || s.fase === "esperando_folio" || s.fase === "nuevo" || s.fase === "desconocido" || s.fase === "esperando_soporte" || s.fase === "esperando_soporte_menu");
   
   if (!s.cargado || cacheIsStale) {
     if (cacheIsStale) {
@@ -1859,6 +1941,23 @@ async function procesarMensajeCore(tel, texto, trace) {
     s = getSesion(tel);
   }
 
+  // v3.39 FIX: race condition cross-réplica en fase esperando_username.
+  // persistFase requiere userId, pero el usuario aún no se registra cuando entra a
+  // esperando_username (solo recibe magic link tras validar apodo). Si una réplica
+  // distinta recibe el username y no había procesado el folio, su cache local tiene
+  // fase="esperando_folio" o "nuevo". Como pasaron <3min, no recarga BD (cacheIsStale=false)
+  // y responde con M.pedirFolio incorrectamente. Fix: si fase es esperando_folio/nuevo
+  // SIN userId, verificar pendingFolio en BD antes de procesar. Si existe → esperando_username.
+  if (!s.userId && (s.fase === "esperando_folio" || s.fase === "nuevo" || s.fase === "desconocido") && !s.pendingFolio) {
+    const pendingRes = await sbRpc("get_pending_registration", { p_phone: tel }, trace);
+    if (pendingRes?.found && pendingRes?.pending_folio) {
+      log.info(trace, `v3.39 race fix: pendingFolio=${pendingRes.pending_folio} encontrado en BD — ajustando fase a esperando_username`);
+      metrics.race_fix_pending_recovery = (metrics.race_fix_pending_recovery || 0) + 1;
+      setSesion(tel, { fase: "esperando_username", pendingFolio: pendingRes.pending_folio });
+      s = getSesion(tel);
+    }
+  }
+
   if (s.bloqueado === true) {
     metrics.user_blocked = (metrics.user_blocked || 0) + 1;
     log.warn(trace, `🚫 Usuario bloqueado (cache), ignorando: ${tel}`);
@@ -1910,8 +2009,35 @@ async function procesarMensajeCore(tel, texto, trace) {
 
   if (intencion === "soporte") {
     metrics.cmd_soporte_invoked++;
-    setSesion(tel, { fase: "esperando_soporte" });
-    return enviar(tel, M.soporteIntro(), trace);
+    setSesion(tel, { fase: "esperando_soporte_menu" });
+    return enviar(tel, M.soporteMenu(), trace);
+  }
+  // v3.40 — menú de soporte: 1 = juego, 2 = tienda/producto
+  if (s.fase === "esperando_soporte_menu") {
+    const earlyExitIntents = ["reiniciar", "folio_input", "ayuda", "puntos", "mi_link", "otra_ronda", "saludo"];
+    if (earlyExitIntents.includes(intencion)) {
+      setSesion(tel, { fase: username ? "activo" : "nuevo" });
+      s = getSesion(tel);
+    } else if (intencion === "cancelar") {
+      setSesion(tel, { fase: username ? "activo" : "nuevo" });
+      return enviar(tel, M.soporteCancelado(), trace);
+    } else {
+      const t = (texto || "").trim().toLowerCase();
+      const esJuego  = t === "1" || /\b(juego|folio|link|registro|puntaje|app|sitio)\b/.test(t);
+      const esTienda = t === "2" || /\b(tienda|producto|sucursal|servicio|nutrisa|nieve|moyo|cielito)\b/.test(t);
+      if (esJuego) {
+        metrics.soporte_categoria_juego = (metrics.soporte_categoria_juego || 0) + 1;
+        setSesion(tel, { fase: "esperando_soporte" });
+        return enviar(tel, M.soporteIntro(), trace);
+      }
+      if (esTienda) {
+        metrics.soporte_categoria_tienda = (metrics.soporte_categoria_tienda || 0) + 1;
+        setSesion(tel, { fase: username ? "activo" : "nuevo" });
+        return enviar(tel, M.soporteTiendaContacto(), trace);
+      }
+      // No clasificó: repreguntar
+      return enviar(tel, M.soporteMenuReintenta(), trace);
+    }
   }
   if (s.fase === "esperando_soporte") {
     // v3.37: early-exit del modo soporte si el usuario manda comandos claros.
@@ -1928,7 +2054,28 @@ async function procesarMensajeCore(tel, texto, trace) {
       setSesion(tel, { fase: username ? "activo" : "nuevo" });
       return enviar(tel, M.soporteCancelado(), trace);
     } else {
-      await bcSyncSoporte(tel, username, texto, "Otro").catch(() => {});
+      // v3.40: respaldo en BD + estado real de Airtable. No mentir.
+      let airtableOk = false;
+      let airtableError = null;
+      try {
+        const result = await bcSyncSoporte(tel, username, texto, "Juego");
+        airtableOk = result !== false;
+      } catch (e) {
+        airtableError = (e?.message || "unknown").substring(0, 200);
+      }
+      // SIEMPRE guardar en BD como respaldo — Airtable puede estar caído
+      try {
+        await sbRpc("save_support_report", {
+          p_phone: tel,
+          p_username: username,
+          p_mensaje: texto,
+          p_airtable_ok: airtableOk,
+          p_airtable_error: airtableError,
+          p_category: "Juego",
+        }, trace);
+      } catch (e) {
+        log.error(trace, `save_support_report falló: ${e.message}`);
+      }
       setSesion(tel, { fase: username ? "activo" : "nuevo" });
       return enviar(tel, M.soporteConfirmado(), trace);
     }
@@ -1977,9 +2124,19 @@ async function procesarMensajeCore(tel, texto, trace) {
     if (!_muid) {
       return enviar(tel, `Para recibir un link primero necesitas registrarte. Envíame tu folio: 21 dígitos que empiezan con 84.`, trace);
     }
+    // v3.40 ANTI-GHOST: verificar que el ticket sigue activo antes de mandar link
+    const status = await getTicketStatus(_muid, null, trace);
+    if (!status || !status.has_ticket) {
+      metrics.mi_link_no_ticket = (metrics.mi_link_no_ticket || 0) + 1;
+      return enviar(tel, `No tienes una ronda activa, *${_muser || "Fanático"}* 🤔\n\n🎫 Envía un folio para iniciar una nueva ronda — te generaré un link al momento.\n\n📊 Si solo querías ver tu puntaje, escribe *PUNTOS*.`, trace);
+    }
+    if (status.session_complete) {
+      metrics.mi_link_session_done = (metrics.mi_link_session_done || 0) + 1;
+      return enviar(tel, `Ya completaste esa ronda, *${_muser || "Fanático"}* 🏆\n\n🎫 Envía otro folio para jugar de nuevo.\n\n📊 Para ver tu puntaje escribe *PUNTOS*.`, trace);
+    }
     const linkRes = await waAuth("get_link", { phone: tel }, trace).catch(() => null);
     if (linkRes?.ok && linkRes.magic_link) {
-      const shortMiLink = await crearShortLink(userId || _muid, linkRes.magic_link, trace);
+      const shortMiLink = await crearShortLink(_muid, linkRes.magic_link, trace);
       return enviar(tel, M.miLink(_muser || "Fanático", shortMiLink), trace);
     }
     return enviar(tel, M.miLinkNoActivo(_muser), trace);
@@ -1994,6 +2151,17 @@ async function procesarMensajeCore(tel, texto, trace) {
     if (!_uid) {
       // genuinamente nuevo: mensaje corto, no el de bienvenida completo
       return enviar(tel, `Para empezar envíame tu folio: 21 dígitos que empiezan con 84.`, trace);
+    }
+    // v3.40 ANTI-GHOST: si tiene ticket pendiente sin sesión completa, reenviar link en vez de pedir folio nuevo
+    const status = await getTicketStatus(_uid, null, trace);
+    if (status?.has_ticket && !status?.session_complete) {
+      log.info(trace, `OTRA RONDA: ticket pendiente detectado, reenviando link en vez de pedir folio nuevo`);
+      metrics.otra_ronda_relink = (metrics.otra_ronda_relink || 0) + 1;
+      const linkRes = await waAuth("get_link", { phone: tel }, trace).catch(() => null);
+      if (linkRes?.ok && linkRes.magic_link) {
+        const shortRelink = await crearShortLink(_uid, linkRes.magic_link, trace);
+        return enviar(tel, M.reenvioLink(_u || "Fanático", shortRelink), trace);
+      }
     }
     return enviar(tel, M.otraRonda(_u || "Fanático", _rondas), trace);
   }
@@ -2121,6 +2289,18 @@ async function procesarMensajeCore(tel, texto, trace) {
       return enviar(tel, M.folioError(claimRes?.error || "already_used"), trace);
     }
     metrics.claim_ok++;
+
+    // v3.40 ANTI-GHOST: verificar que el ticket SÍ quedó en BD antes de mandar magic link.
+    // Race conditions o triggers pueden hacer rollback silencioso. Si esto pasó,
+    // mejor decir error explícito ahora que mandar link a sesión rota.
+    const postClaimStatus = await getTicketStatus(newUserId, pendFolio, trace);
+    if (!postClaimStatus?.has_ticket) {
+      metrics.claim_ghost = (metrics.claim_ghost || 0) + 1;
+      log.error(trace, `GHOST CLAIM detectado tras register: claim returned success pero ticket no existe en BD. user=${newUserId} folio=${pendFolio}`);
+      setSesion(tel, { fase: "activo", username: finalUsername, userId: newUserId, pendingFolio: null });
+      sbRpc("clear_pending_registration", { p_phone: tel }, trace).catch(() => {});
+      return enviar(tel, `Hubo un problema al guardar tu folio en el sistema. Por favor envíalo de nuevo en unos segundos — si vuelve a fallar, escribe *SOPORTE*.`, trace);
+    }
 
     let completedToday = 0;
     let totalCompleted = 0;
@@ -2259,6 +2439,14 @@ async function procesarMensajeCore(tel, texto, trace) {
         return enviar(tel, M.folioError(claimRes?.error || "already_used"), trace);
       }
       metrics.claim_ok++;
+
+      // v3.40 ANTI-GHOST: verificar que el ticket SÍ quedó en BD antes de mandar magic link
+      const postClaimStatus2 = await getTicketStatus(userId, folio, trace);
+      if (!postClaimStatus2?.has_ticket) {
+        metrics.claim_ghost = (metrics.claim_ghost || 0) + 1;
+        log.error(trace, `GHOST CLAIM (folio adicional): claim success pero ticket no existe. user=${userId} folio=${folio}`);
+        return enviar(tel, `Hubo un problema al guardar tu folio. Por favor envíalo de nuevo en unos segundos — si vuelve a fallar, escribe *SOPORTE*.`, trace);
+      }
 
       let completedToday = rondasHoy;
       let totalCompleted = localRondasTotal;
@@ -3019,6 +3207,42 @@ async function start() {
       lastSnapshotDate = today;
       log.info(null, `📊 Triggering daily leaderboard snapshot for ${today}`);
       runLeaderboardSnapshot().catch(e => log.error(null, "Leaderboard snapshot ERR:", e.message));
+    }
+  }, 5 * 60 * 1000);
+
+  // v3.40: recordatorios de tickets pendientes (30-35 min sin abrir el link)
+  // Evita que usuarios pierdan el ticket por no haber abierto el magic link.
+  // Corre cada 5 min, ventana 30-35 min para no spammear.
+  const reminderSentMemo = new Map(); // key: ticket_code, value: timestamp (anti-duplicado)
+  setInterval(async () => {
+    try {
+      const pending = await sbRpc("get_pending_ticket_reminders", { p_min_minutes: 30, p_max_minutes: 35 }, null);
+      if (!Array.isArray(pending) || pending.length === 0) return;
+      log.info(null, `🔔 ${pending.length} usuario(s) con ticket pendiente, enviando recordatorios`);
+      for (const u of pending) {
+        // Anti-dup: si ya mandamos recordatorio por este ticket, skip
+        if (reminderSentMemo.has(u.ticket_code)) continue;
+        reminderSentMemo.set(u.ticket_code, Date.now());
+        try {
+          const msg = 
+            `⏱️ Hola, *${u.wa_username || "Fanático"}*.\n\n` +
+            `Te envié un link hace ${u.minutes_since_redeem} min — ¿pudiste abrirlo? 🤔\n\n` +
+            `↳ Escribe *MI LINK* si lo necesitas de nuevo.\n` +
+            `↳ O escribe *SOPORTE* si tienes problemas.\n\n` +
+            `💡 Tu folio se libera automáticamente en 6 horas si no juegas.`;
+          await enviar(u.wa_phone, msg, null);
+          metrics.reminder_sent = (metrics.reminder_sent || 0) + 1;
+        } catch (e) {
+          log.warn(null, `Recordatorio fail para ${u.wa_phone}: ${e.message}`);
+        }
+      }
+      // Limpiar memo viejo (>1 hora) para liberar memoria
+      const cutoff = Date.now() - 60 * 60 * 1000;
+      for (const [k, v] of reminderSentMemo.entries()) {
+        if (v < cutoff) reminderSentMemo.delete(k);
+      }
+    } catch (e) {
+      log.warn(null, `reminder cron err: ${e.message}`);
     }
   }, 5 * 60 * 1000);
 
