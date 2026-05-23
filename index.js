@@ -1,7 +1,8 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRISA — BOT v3.40 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRISA — BOT v3.41 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutrisa · WhatsApp-native                       ║
 // ║                                                                              ║
+// ║  v3.41: Cross-réplica esperando_username refresh + MI LINK fallback BD       ║
 // ║  v3.40: Anti-ghost — verificación post-op + soporte respaldo + recordatorios ║
 // ║  v3.39: Short links /j/CODE — fix tap único en WhatsApp iOS                  ║
 // ║  v3.38: Copy review (emojis + flechas + lenguaje formal sin slang)           ║
@@ -10,6 +11,23 @@
 // ║  v3.35: Caché stale-aware + retry robusto + ortografía Nutrisa               ║
 // ║  v3.34: Multi-réplica safe — dedupe distribuido + fase en BD                 ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
+//
+// ─── NUEVO EN v3.41 (22 may 2026 — cross-réplica robustness) ─────────────────
+// Fixes para que el bot nunca quede "atascado" con caché viejo entre réplicas:
+//
+// 1) esperando_username AGREGADO al safe-phases del cache_stale_reload.
+//    Bug original: réplica B tenía caché viejo (fase=esperando_username) por >3 min
+//    y NO refrescaba de BD. Usuario ya registrado → respondía "Antes envíame
+//    un apodo para tu folio anterior" cuando enviaba folio adicional.
+//
+// 2) DEFENSIVE BD CHECK en esperando_username handler: si llega folio_input,
+//    consultar BD antes de responder. Si BD dice registered=true → refrescar
+//    caché y re-enrutar al folio_input handler normal.
+//
+// 3) MI LINK FALLBACK: si waAuth("get_link") no devuelve magic_link (rate limit
+//    de Supabase Auth o edge function caída), buscar el short_link activo del
+//    usuario en BD y reenviarlo en lugar de decir "no tienes ronda activa".
+//    Requiere RPC get_user_active_short_link.
 //
 // ─── NUEVO EN v3.40 (22 may 2026 — anti-ghost messages) ──────────────────────
 // Objetivo: que el bot NUNCA diga "OK" cuando algo realmente falló.
@@ -213,7 +231,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.40";
+const VERSION         = "3.41";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -1851,10 +1869,11 @@ async function procesarMensajeCore(tel, texto, trace) {
 
   // v3.37: Re-cargar de BD si caché está stale (>3 min sin actividad) Y la fase es segura
   // Esto previene que una réplica use datos viejos cuando otra réplica modificó la BD.
-  // Incluimos esperando_soporte para que cambios cross-réplica se reflejen.
+  // v3.40 FIX: incluir esperando_username — si otra réplica registró al usuario, esta debe enterarse.
+  // El pendingFolio se recupera de BD en cargarSesion (líneas 1889-1900) si sigue legítimo.
   const cacheIsStale = s.cargado && s.lastSeen && 
     (Date.now() - s.lastSeen > CACHE_STALE_MS) &&
-    (s.fase === "activo" || s.fase === "esperando_folio" || s.fase === "nuevo" || s.fase === "desconocido" || s.fase === "esperando_soporte" || s.fase === "esperando_soporte_menu");
+    (s.fase === "activo" || s.fase === "esperando_folio" || s.fase === "nuevo" || s.fase === "desconocido" || s.fase === "esperando_soporte" || s.fase === "esperando_soporte_menu" || s.fase === "esperando_username");
   
   if (!s.cargado || cacheIsStale) {
     if (cacheIsStale) {
@@ -2160,6 +2179,17 @@ async function procesarMensajeCore(tel, texto, trace) {
       const shortMiLink = await crearShortLink(_muid, linkRes.magic_link, trace);
       return enviar(tel, M.miLink(_muser || "Fanático", shortMiLink), trace);
     }
+    // v3.40 FIX: waAuth no devolvió link — buscar short_link activo del usuario en BD.
+    // Esto cubre casos donde waAuth está rate-limited o el edge function falla
+    // pero el usuario sí tiene un link válido reciente.
+    log.warn(trace, `waAuth get_link no devolvió magic_link — fallback a short_link de BD`);
+    metrics.mi_link_fallback_db = (metrics.mi_link_fallback_db || 0) + 1;
+    const existingCode = await sbRpc("get_user_active_short_link", { p_user_id: _muid }, trace);
+    if (existingCode && typeof existingCode === "string") {
+      const existingShortLink = `${SITE_URL}/j/${existingCode}`;
+      log.info(trace, `Short link recuperado de BD: ${existingShortLink}`);
+      return enviar(tel, M.miLink(_muser || "Fanático", existingShortLink), trace);
+    }
     return enviar(tel, M.miLinkNoActivo(_muser), trace);
   }
   if (intencion === "otra_ronda")  {
@@ -2234,13 +2264,33 @@ async function procesarMensajeCore(tel, texto, trace) {
 
   if (s.fase === "esperando_username") {
     if (intencion === "folio_input") {
-      log.info(trace, `Folio recibido en esperando_username — pidiendo username del folio anterior`);
-      return enviar(tel,
-        `Antes envíame *un apodo* para tu folio anterior.\n\n` +
-        `O escribe *REINICIAR* si prefieres empezar con este folio nuevo.`,
-        trace
-      );
-    }
+      // v3.40 FIX: si BD dice que el usuario YA está registrado (cross-réplica desync),
+      // refrescar cache y dejar caer el mensaje al handler de folio_input normal.
+      const stateCheck = await sbRpc("get_wa_profile", { p_phone: tel }, trace);
+      if (stateCheck?.found && stateCheck?.wa_registered && stateCheck?.user_id && stateCheck?.wa_username) {
+        log.warn(trace, `v3.40 FIX: cache decía esperando_username pero BD dice registered=true username=${stateCheck.wa_username} — refrescando y re-enrutando`);
+        metrics.cross_replica_username_fix = (metrics.cross_replica_username_fix || 0) + 1;
+        setSesion(tel, {
+          fase: "activo",
+          username: stateCheck.wa_username,
+          userId: stateCheck.user_id,
+          registered: true,
+          pendingFolio: null,
+          rondasHoy: stateCheck.wa_fecha_reset === hoy ? (stateCheck.wa_rondas_hoy || 0) : 0,
+          rondasTotal: stateCheck.wa_rondas_total || 0,
+          fechaReset: stateCheck.wa_fecha_reset || null,
+        });
+        s = getSesion(tel);
+        // Continuamos al handler de folio_input normal abajo (no return aquí)
+      } else {
+        log.info(trace, `Folio recibido en esperando_username — pidiendo username del folio anterior`);
+        return enviar(tel,
+          `Antes envíame *un apodo* para tu folio anterior.\n\n` +
+          `O escribe *REINICIAR* si prefieres empezar con este folio nuevo.`,
+          trace
+        );
+      }
+    } else {
 
     const nombrePropuesto = texto.trim().substring(0, 20);
     const val = validarUsername(nombrePropuesto);
@@ -2364,7 +2414,8 @@ async function procesarMensajeCore(tel, texto, trace) {
     log.info(trace, `Magic link generado: ${maskLink(regRes.magic_link)}`);
     const shortReg = await crearShortLink(regRes.user_id || userId, regRes.magic_link, trace);
     return enviar(tel, M.registroCompleto(finalUsername, shortReg, rondaNum), trace);
-  }
+    }  // cierra else (no folio_input en esperando_username)
+  }  // cierra if (s.fase === "esperando_username")
 
   const looksLikeFolio = /^\d{10,}$/.test(texto.replace(/\s/g, ""));
   if (intencion === "folio_input" || (s.fase === "esperando_folio" && looksLikeFolio)) {
