@@ -1332,7 +1332,7 @@ ${magicLink}
 
 ✅ Cuando completes esa ronda, envíame el folio nuevo y lo registraré.
 
-⏱️ Tienes hasta *15 minutos* para terminar antes de que el folio se libere automáticamente.
+⏱️ Tienes hasta *6 horas* para completar la ronda antes de que el folio se libere.
 🔄 Si recibiste varios links, *usa el más reciente* — los anteriores ya no funcionan.`,
 
   rondaCompletada: (username, score, rondasHoy, puntosTotal, posicion, totalJugadores) => {
@@ -1491,9 +1491,9 @@ La hora de tu celular no aplica — siempre es hora de México.
 
 Cuando completes esa ronda, podrás canjear otro folio.
 
-(Si no completas en 15 minutos, el folio se libera automáticamente.)
+(Si no completas en 6 horas, el folio se libera automáticamente.)
 
-💡 ¿Perdiste el link? Envíame de nuevo el folio que ya canjeaste para reenviártelo.`,
+💡 ¿Perdiste el link? Escribe *MI LINK* para reenviártelo.`,
 
       rate_limited:
 `Estás enviando folios demasiado rápido 🛑
@@ -2016,7 +2016,17 @@ async function procesarMensajeCore(tel, texto, trace) {
   if (s.fase === "esperando_soporte_menu") {
     const earlyExitIntents = ["reiniciar", "folio_input", "ayuda", "puntos", "mi_link", "otra_ronda", "saludo"];
     if (earlyExitIntents.includes(intencion)) {
-      setSesion(tel, { fase: username ? "activo" : "nuevo" });
+      let exitUsername = username;
+      let exitUserId = userId;
+      if (!exitUsername) {
+        const rec = await recoverFromDB("soporte_menu_early_exit");
+        if (rec) { exitUsername = rec.username; exitUserId = rec.userId; }
+      }
+      setSesion(tel, {
+        fase: exitUsername ? "activo" : "nuevo",
+        username: exitUsername || username,
+        userId: exitUserId || userId,
+      });
       s = getSesion(tel);
     } else if (intencion === "cancelar") {
       setSesion(tel, { fase: username ? "activo" : "nuevo" });
@@ -2042,13 +2052,24 @@ async function procesarMensajeCore(tel, texto, trace) {
   if (s.fase === "esperando_soporte") {
     // v3.37: early-exit del modo soporte si el usuario manda comandos claros.
     // Esto evita que un folio o "reiniciar" se manden a Airtable como "reporte".
+    // v3.40 FIX: si no tenemos username en cache (cross-réplica), intentar recuperar
+    // de BD ANTES del early exit para que username/userId estén disponibles.
     const earlyExitIntents = ["reiniciar", "folio_input", "ayuda", "puntos", "mi_link", "otra_ronda", "saludo"];
     if (earlyExitIntents.includes(intencion)) {
+      let exitUsername = username;
+      let exitUserId = userId;
+      if (!exitUsername) {
+        const rec = await recoverFromDB("soporte_early_exit");
+        if (rec) { exitUsername = rec.username; exitUserId = rec.userId; }
+      }
       log.info(trace, `Soporte cancelado por intent "${intencion}" — bypass automático`);
       metrics.soporte_auto_cancel = (metrics.soporte_auto_cancel || 0) + 1;
-      setSesion(tel, { fase: username ? "activo" : "nuevo" });
-      // No respondemos M.soporteCancelado() — el handler del intent siguiente responde
-      // Re-leer la sesión para que los handlers de abajo vean la fase actualizada
+      setSesion(tel, {
+        fase: exitUsername ? "activo" : "nuevo",
+        username: exitUsername || username,
+        userId: exitUserId || userId,
+      });
+      // Re-leer la sesión para que los handlers de abajo vean la fase y usuario actualizados
       s = getSesion(tel);
     } else if (intencion === "cancelar") {
       setSesion(tel, { fase: username ? "activo" : "nuevo" });
