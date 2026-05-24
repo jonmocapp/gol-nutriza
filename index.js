@@ -1,7 +1,9 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRISA — BOT v3.41 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRISA — BOT v3.43 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutrisa · WhatsApp-native                       ║
 // ║                                                                              ║
+// ║  v3.43: Legal compliance — timeout sesión 6h + nombres minijuegos + fechas   ║
+// ║  v3.42: Smart filters + admin commands + alerts                              ║
 // ║  v3.41: Cross-réplica esperando_username refresh + MI LINK fallback BD       ║
 // ║  v3.40: Anti-ghost — verificación post-op + soporte respaldo + recordatorios ║
 // ║  v3.39: Short links /j/CODE — fix tap único en WhatsApp iOS                  ║
@@ -11,6 +13,70 @@
 // ║  v3.35: Caché stale-aware + retry robusto + ortografía Nutrisa               ║
 // ║  v3.34: Multi-réplica safe — dedupe distribuido + fase en BD                 ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
+//
+// ─── NUEVO EN v3.43 (23 may 2026 — legal compliance del doc oficial) ─────────
+// Auditoría del documento legal "ByMP - PIN - FANATICOS DEL SABOR - Promo
+// multimarca 28_04_2026.docx" reveló inconsistencias técnicas y de copy.
+// Fixes aplicados:
+//
+// 1) TIMEOUT SESIÓN (BD): bot_cleanup_sessions ahora usa 360 min (6h) en lugar
+//    de 15 min. El documento NO marca límite para completar los 4 minijuegos
+//    una vez iniciada la sesión — solo "1 hora para iniciar sesión". El timeout
+//    de 15 min borraba sesión + ticket + scores si el user no completaba en
+//    ese tiempo, causando pérdida de folio por interrupciones razonables.
+//
+// 2) NOMBRES OFICIALES DE MINIJUEGOS (copy): documentados en M.reglas según doc:
+//    - Penales (Nutrisa) — ya estaba "Penalty" en frontend
+//    - Paredones (Chilim Balam) — antes "Pongoal"
+//    - Tiro a Puerta (Cielito Querido Café) — antes "Free Throw"
+//    - La Afición (Moyo) — ya estaba correcto
+//    (El cambio en frontend lo aplica Mohamed; aquí solo el copy del bot.)
+//
+// 3) FECHAS LEGALES (constantes): separadas CAMPAIGN_PURCHASE_END (9 jul) y
+//    CAMPAIGN_REGISTER_END (12 jul, 3 días después). WINNERS_ANNOUNCE_DATE,
+//    EVENTO_COTORRISA, EVENTO_LUGAR documentados.
+//
+// 4) TELÉFONO SOPORTE OFICIAL (copy): TELEFONO_SOPORTE_OFICIAL = 800.024.0340
+//    agregado a soporteIntro como alternativa de contacto (antes solo estaba
+//    en soporteTiendaContacto).
+//
+// 5) PREMIOS — DESCRIPCIÓN PRECISA (copy): M.premios actualizado con:
+//    - "Cascarita con La Cotorrisa" (no solo "Meet & Greet")
+//    - Fecha jueves 30 jul 2026
+//    - Lugar Cuajimalpa CDMX
+//    - 20+8+13+40 = 81 ganadores con conteos exactos por categoría
+//    - Fecha anuncio ganadores 18 jul
+//
+// 6) MAYORÍA DE EDAD + T&Cs (copy): folioOkPideNombre agrega disclaimer:
+//    "Al continuar confirmas que eres mayor de 18 años y aceptas T&Cs."
+//
+// ─── NUEVO EN v3.42 (23 may 2026 — defensa en profundidad para folios) ────────
+// Construye 6 capas de protección que NUNCA permiten que un folio se procese
+// dos veces, ni que dos usuarios racing claimen el mismo, ni que un user spamee
+// folios para abusar del sistema.
+//
+// SMART FILTERS LAYER:
+//   1) Dedup local in-memory: mismo folio del mismo user en <15s → silent skip
+//   2) Dedup BD (90s window): query a folio_attempt_log para detectar duplicates
+//      cross-réplica que el cache local no vió.
+//   3) Spam detection: 3+ folios distintos en 90s → throttle + alerta
+//   4) Insistencia detection: mismo folio rechazado 4+ veces → mensaje especial
+//   5) Cross-user collision: mismo folio intentado por 2+ teléfonos → alerta
+//   6) Lock distribuido en BD (folio_inflight): solo una réplica procesa a la vez
+//   7) Extracción inteligente: folio en texto libre, multi-folio, truncado,
+//      con dígitos de más, todos con mensajes específicos en lugar de "formato".
+//
+// ADMIN COMMANDS (solo desde teléfonos en admin_phones):
+//   • ESTADO <username>  — info detallada de usuario
+//   • TOP10              — leaderboard
+//   • SALUD              — health check del sistema
+//   • LIBERAR <folio>    — libera un folio canjeado (no jugado)
+//
+// ALERT SYSTEM:
+//   • Cron anomaly_detector cada 5 min detecta ghost claims, webhooks failed,
+//     tickets stuck, colisiones. Inserta en admin_alerts.
+//   • Bot tiene poller que cada 30s envía alertas pendientes a admin_phones
+//     via WhatsApp.
 //
 // ─── NUEVO EN v3.41 (22 may 2026 — cross-réplica robustness) ─────────────────
 // Fixes para que el bot nunca quede "atascado" con caché viejo entre réplicas:
@@ -231,7 +297,7 @@ app.use((err, req, res, next) => {
 });
 
 // ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.41";
+const VERSION         = "3.43";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -338,7 +404,17 @@ const RONDAS_MAX           = 5;
 const DIAS_VALIDEZ         = 3;
 const SITE_URL             = "https://fanaticosdelsabor.com";
 const IMG_FOLIO            = "https://i.ibb.co/TDP6mnRz/Folio.jpg";
-const CAMPAIGN_END_DATE    = "9 julio";
+
+// v3.43 LEGAL COMPLIANCE — fechas oficiales del doc legal
+const CAMPAIGN_PURCHASE_END = "9 julio";       // último día de compra
+const CAMPAIGN_REGISTER_END = "12 julio";       // último día de registro (compra + 3 días)
+const CAMPAIGN_END_DATE     = CAMPAIGN_PURCHASE_END;  // alias retrocompatible
+const WINNERS_ANNOUNCE_DATE = "18 de julio";    // fecha anuncio ganadores
+const EVENTO_COTORRISA      = "jueves 30 de julio de 2026";
+const EVENTO_LUGAR          = "Cuajimalpa, CDMX";
+const TELEFONO_SOPORTE_OFICIAL = "800.024.0340";
+const SOPORTE_HORARIO       = "lunes a viernes de 9:00 a 17:00 hrs (CDMX)";
+
 const DIAS_RE_ENGAGEMENT   = 3;
 
 const FETCH_TIMEOUT_MS     = 8000;
@@ -350,6 +426,13 @@ const DEDUP_TTL_MS         =  5 * 60 * 1000;
 const DEDUP_MAX_ENTRIES    = 50_000;
 const USERLOCK_MAX_AGE_MS  = 60 * 1000;
 const CLEANUP_INTERVAL_MS  = 10 * 60 * 1000;
+
+// v3.42 SMART FILTERS — folio safety constants
+const FOLIO_DEDUP_WINDOW_MS = 15 * 1000;     // dentro de 15s, mismo folio del mismo user → ignored
+const FOLIO_INFLIGHT_TTL_MS = 30 * 1000;     // claim lock dura 30s máx
+const FOLIO_RAPID_FIRE_LIMIT = 3;            // ≥3 folios distintos en 90s = throttle
+const FOLIO_INSISTENT_LIMIT = 4;             // mismo folio rechazado ≥4 veces = mensaje especial
+const ALERT_POLL_INTERVAL_MS = 30 * 1000;    // cada 30s, bot revisa alertas pendientes
 
 const OUTBOUND_THROTTLE_MS = 500;
 const INBOUND_MAX_PER_MIN  = 15;
@@ -1256,13 +1339,17 @@ Ya completaste tus *${RONDAS_MAX} rondas* de hoy. Se reinician mañana a *median
 
 Tienes *${RONDAS_MAX} rondas* disponibles hoy.
 
-🎫 Envía un folio para comenzar, o escribe *PUNTOS* para ver tu posición.`;
+🎫 *Envíame tu folio para jugar.*
+
+(O escribe *PUNTOS* para ver tu posición.)`;
     }
     return `¡Hola, *${username}*! 👋
 
 Llevas *${rondasHoy}/${RONDAS_MAX}* rondas hoy. Te quedan *${RONDAS_MAX - rondasHoy}*.
 
-🎫 Envía tu siguiente folio, o escribe *PUNTOS* para ver tu posición.`;
+🎫 *Envíame tu siguiente folio para jugar otra ronda.*
+
+(O escribe *PUNTOS* para ver tu posición.)`;
   },
 
   bienvenidaReEngagement: (username) =>
@@ -1294,7 +1381,9 @@ Reglas: 3 a 20 caracteres, sin espacios y sin acentos. Solo letras, números y g
 
 Ejemplos: *Goleador26*, *NutriFan*, *MoyoQueen*, *ChilimRey*.
 
-💡 Ese apodo te identificará durante toda la campaña. Elígelo con cuidado.`;
+💡 Ese apodo te identificará durante toda la campaña. Elígelo con cuidado.
+
+🔞 _Al continuar confirmas que eres mayor de 18 años y aceptas los términos y condiciones de la promoción._`;
   },
 
   usernameInvalido: (razon, sugerencia) =>
@@ -1470,8 +1559,11 @@ Revisa la fecha en tu ticket — debe ser de *hoy o ayer*.
       campaign_ended:
 `🏁 *Fanáticos del Sabor* ya finalizó.
 
-La campaña concluyó. ¡Gracias por jugar! ⚽
-Consulta los ganadores en ${SITE_URL}.`,
+La campaña concluyó el *${CAMPAIGN_PURCHASE_END}*. ¡Gracias por jugar! ⚽
+
+📢 Los ganadores se anunciarán el *${WINNERS_ANNOUNCE_DATE}* en las redes oficiales de Nutrisa, Moyo, Cielito Querido Café y Chilim Balam.
+
+🔗 Consulta el sitio en ${SITE_URL}`,
 
       folio_too_low:
 `Ese folio es anterior al inicio de la campaña 📋
@@ -1619,55 +1711,76 @@ ${top3Lines}
   premios: () =>
 `🏆 *81 premios en total* — Fanáticos del Sabor
 
-🥇 *Top 20 del leaderboard*
-↳ Meet & Greet con *La Cotorrisa* 🎤
-↳ El evento del año
+🥇 *Premio Mayor* (20 ganadores)
+↳ Pase a una *cascarita con La Cotorrisa* ⚽
+↳ ${EVENTO_COTORRISA}
+↳ ${EVENTO_LUGAR}
 
-🥈 *Top 8 siguientes*
+🥈 *Primer Premio Adicional* (8 ganadores)
 ↳ *Nintendo Switch 2* 🎮
-↳ La consola más buscada de 2026
 
-🥉 *Top 13 siguientes*
-↳ *LEGO Edición Especial* 🧱
-↳ Para coleccionistas
+🥉 *Segundo Premio Adicional* (13 ganadores)
+↳ *Set LEGO WC 26* 🧱
 
-🏅 *Top 40 siguientes*
-↳ *Merchandising firmado por La Cotorrisa* 👕
-↳ Edición limitada de la campaña
+🏅 *Tercer Premio Adicional* (40 ganadores)
+↳ *Playera autografiada por La Cotorrisa* 👕
 
 💪 *Cómo subir en el ranking:*
 ↳ Juega tus *${RONDAS_MAX} rondas diarias*
 ↳ Mejora tu puntaje en cada juego
 ↳ Acumula puntos durante toda la campaña
 
-🔥 La campaña termina el *${CAMPAIGN_END_DATE}*.
+📅 *Fechas clave:*
+↳ Compra hasta el *${CAMPAIGN_PURCHASE_END}*
+↳ Registro de tickets hasta el *${CAMPAIGN_REGISTER_END}*
+↳ Ganadores anunciados el *${WINNERS_ANNOUNCE_DATE}*
 
 📊 Para ver tu posición → *PUNTOS*`,
 
   tiendas: () =>
-`🏪 *Marcas participantes:*
+`🏪 *Tiendas participantes:*
 
-🥑 *Nutrisa* → yogurts y helados
-🍦 *Moyo* → yogurt helado con toppings
-☕ *Cielito Café* → café y panadería
-🌮 *Chilim Balam* → cocina mexicana
+🥑 *Nutrisa*
+↳ Todas las tiendas a nivel nacional
+↳ _Excepto:_ Liverpool y Fábricas de Francia
 
-🎫 Compra en cualquiera → guarda el ticket → envíame el folio dentro de los siguientes *${DIAS_VALIDEZ} días*.
+🍦 *Moyo*
+↳ Todas las tiendas a nivel nacional
+↳ _Excepto:_ Palacio de Hierro y Mini Moyo
 
-💡 Cada marca cuenta igual para tus puntos.`,
+☕ *Cielito Querido Café*
+↳ Todas las cafeterías a nivel nacional
+↳ _Excepto:_ Cinemex Market
+
+🌮 *Chilim Balam*
+↳ Todas las tiendas a nivel nacional
+↳ _Excepto:_ Cinemex
+
+🎫 Cualquier compra te da un ticket con folio para jugar.
+
+💡 *Importante:* solo aceptamos folios emitidos durante la vigencia de la promoción.`,
 
   reglas: () =>
 `📋 *Reglas de la campaña:*
 
 🎫 *1 folio = 1 ronda* (4 minijuegos)
-🎮 Máximo *${RONDAS_MAX} rondas* al día
+🎮 Máximo *${RONDAS_MAX} rondas* al día (5 tickets por día)
 📅 Ticket válido por *${DIAS_VALIDEZ} días* desde la compra
 🏆 Los puntos *se acumulan* durante toda la campaña
 🌅 Las rondas se reinician a *medianoche (hora CDMX)*
 🔒 Cada folio se usa *una sola vez* — no lo compartas
-👤 *Un WhatsApp equivale a una cuenta* — no se permiten cuentas duplicadas
+👤 *Un WhatsApp = una cuenta* — no se permiten cuentas duplicadas
+🔞 Solo para *mayores de 18 años*
 
-📅 La campaña termina el *${CAMPAIGN_END_DATE}*.
+⚽ *Los 4 minijuegos:*
+↳ *Penales* (Nutrisa)
+↳ *Paredones* (Chilim Balam)
+↳ *Tiro a Puerta* (Cielito Querido Café)
+↳ *La Afición* (Moyo)
+
+📅 *Fechas clave:*
+↳ Compra hasta el *${CAMPAIGN_PURCHASE_END}*
+↳ Registro de tickets hasta el *${CAMPAIGN_REGISTER_END}*
 
 💡 Si algo no queda claro, escribe *AYUDA* o *SOPORTE*.`,
 
@@ -1739,6 +1852,8 @@ Descríbenos en una sola frase qué necesitas. Por ejemplo:
 
 📩 Un humano te contestará en *menos de 24 horas* (lunes a viernes, 9:00 a 18:00 CDMX).
 
+📞 ¿Prefieres llamar? *${TELEFONO_SOPORTE_OFICIAL}* (${SOPORTE_HORARIO}).
+
 💡 Sugerencia: si no has recibido tu link, escribe *MI LINK* para generar uno nuevo.
 
 (Si cambias de opinión, escribe *CANCELAR*.)`,
@@ -1746,9 +1861,9 @@ Descríbenos en una sola frase qué necesitas. Por ejemplo:
   soporteTiendaContacto: () =>
 `🛍️ *Para dudas de tienda, producto o servicio Nutrisa:*
 
-📞 *Teléfono:* 800 024 0340
+📞 *Teléfono:* ${TELEFONO_SOPORTE_OFICIAL}
 📧 *Correo:* mesadeayuda@nutrisa.com
-🕐 *Horario:* Lunes a viernes, 9:00 a 17:00 hrs
+🕐 *Horario:* ${SOPORTE_HORARIO}
 
 Atención disponible durante la vigencia de la promoción.
 
@@ -1861,8 +1976,472 @@ function diasSinActividad(profile) {
 }
 
 // ─── LÓGICA PRINCIPAL ───────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════
+// v3.42 SMART FILTERS LAYER — defensa en profundidad para folios
+// ════════════════════════════════════════════════════════════════
+// Capas:
+//  1. lastFolioByUser  — cache local de último folio enviado por user
+//  2. tryAcquireFolioLock — lock distribuido en BD para evitar race cross-réplica
+//  3. detectFolioSpamPattern — detecta spam, rapid-fire, insistencia
+//  4. detectCrossUserCollision — detecta dos users intentando el mismo folio
+//  5. extraerFolioInteligente — extrae folio de texto libre, multi-folio, etc.
+//  6. logFolioAttempt — registra TODO intento para análisis post-mortem
+//
+// La idea: si esta capa intercepta un problema, NUNCA llegamos a
+// validate_and_claim_ticket dos veces para el mismo (user, folio).
+
+// ── Capa 1: cache local in-memory (rápido, sin RTT a BD) ────────
+// Map<phone, { folio, ts, outcome }>
+const lastFolioByUser = new Map();
+
+function registerLastFolio(tel, folio, outcome) {
+  lastFolioByUser.set(tel, { folio, ts: Date.now(), outcome });
+  // Limpieza simple: si crece >5000, recorta los más viejos
+  if (lastFolioByUser.size > 5000) {
+    const entries = [...lastFolioByUser.entries()].sort((a, b) => a[1].ts - b[1].ts);
+    for (let i = 0; i < 1000; i++) lastFolioByUser.delete(entries[i][0]);
+  }
+}
+
+function checkLocalFolioDedup(tel, folio) {
+  const last = lastFolioByUser.get(tel);
+  if (!last) return { duplicate: false };
+  if (last.folio !== folio) return { duplicate: false };
+  const ageMs = Date.now() - last.ts;
+  if (ageMs > FOLIO_DEDUP_WINDOW_MS) return { duplicate: false };
+  return { duplicate: true, ageMs, outcome: last.outcome };
+}
+
+// ── Capa 2: lock distribuido en BD ──────────────────────────────
+async function tryAcquireFolioLock(folio, userId, tel, trace) {
+  try {
+    const res = await sbRpc("try_lock_folio_inflight", {
+      p_folio: folio,
+      p_user_id: userId,
+      p_phone: tel,
+      p_trace: trace || null,
+    }, trace);
+    return res || { acquired: false };
+  } catch (e) {
+    log.warn(trace, `tryAcquireFolioLock failed: ${e.message} — proceeding anyway`);
+    return { acquired: true, soft_fallback: true }; // si BD falla, no bloqueamos
+  }
+}
+
+async function releaseFolioLock(folio, trace) {
+  try {
+    await sbRpc("release_folio_inflight", { p_folio: folio }, trace);
+  } catch (e) {
+    log.warn(trace, `releaseFolioLock failed: ${e.message}`);
+  }
+}
+
+// ── Capa 3: detección de patrones de spam ───────────────────────
+async function detectFolioSpam(tel, folio, trace) {
+  try {
+    return await sbRpc("detect_folio_spam_pattern", {
+      p_phone: tel, p_current_folio: folio,
+    }, trace);
+  } catch (e) {
+    log.warn(trace, `detectFolioSpam failed: ${e.message}`);
+    return null;
+  }
+}
+
+// ── Capa 4: colisión cross-user ─────────────────────────────────
+async function detectCrossUserCollision(folio, userId, trace) {
+  if (!userId) return { collision_detected: false };
+  try {
+    return await sbRpc("detect_cross_user_collision", {
+      p_folio: folio, p_current_user_id: userId,
+    }, trace);
+  } catch (e) {
+    log.warn(trace, `detectCrossUserCollision failed: ${e.message}`);
+    return { collision_detected: false };
+  }
+}
+
+// ── Capa 5: extracción inteligente de folios ────────────────────
+// Maneja: folio en texto libre, multi-folio, folios truncados, typos comunes
+function extraerFolioInteligente(texto) {
+  if (!texto || typeof texto !== 'string') return { found: false, reason: 'no_folio' };
+
+  // Quitar espacios, guiones, puntos comunes — pero no dígitos
+  const normalized = texto.replace(/[\s\-\.\,]/g, '');
+  
+  // Caso 1: exactamente 21 dígitos, sin nada más
+  if (/^\d{21}$/.test(normalized)) {
+    if (normalized.startsWith('84')) {
+      return { found: true, folio: normalized, confidence: 'high', method: 'exact' };
+    } else {
+      return { found: false, reason: 'wrong_prefix', value: normalized.substring(0, 2) };
+    }
+  }
+
+  // Detectar TODAS las "runs" de dígitos en el texto
+  const allRuns = [...texto.matchAll(/\d+/g)].map(m => ({ value: m[0], idx: m.index }));
+  
+  // Folios válidos = runs de exactamente 21 dígitos empezando con 84
+  const validFolios = allRuns
+    .filter(r => r.value.length === 21 && r.value.startsWith('84'))
+    .map(r => r.value);
+  
+  // Caso 2: múltiples folios distintos detectados
+  if (validFolios.length > 1) {
+    const unique = [...new Set(validFolios)];
+    if (unique.length > 1) {
+      return { 
+        found: true, 
+        folio: unique[0], 
+        confidence: 'medium', 
+        method: 'multi',
+        others: unique.slice(1),
+      };
+    }
+    return { found: true, folio: unique[0], confidence: 'high', method: 'exact_repeated' };
+  }
+  
+  // Caso 3: exactamente un folio válido embebido en texto
+  if (validFolios.length === 1) {
+    return { found: true, folio: validFolios[0], confidence: 'high', method: 'embedded' };
+  }
+  
+  // Caso 4: hay run(s) de dígitos pero ninguno es 21+84. Diagnóstico:
+  // Considerar runs de 17 a 60 dígitos (cubrir hasta 3 folios pegados)
+  const candidateRun = allRuns
+    .map(r => r.value)
+    .filter(v => v.length >= 17 && v.length <= 60)
+    .reduce((longest, current) => current.length > longest.length ? current : longest, '');
+  
+  if (candidateRun) {
+    if (candidateRun.length < 21) {
+      return { 
+        found: false, 
+        reason: 'too_short', 
+        missing_digits: 21 - candidateRun.length,
+        value: candidateRun,
+      };
+    } else if (candidateRun.length > 21) {
+      return { 
+        found: false, 
+        reason: 'too_long', 
+        extra_digits: candidateRun.length - 21,
+        value: candidateRun,
+      };
+    } else if (candidateRun.length === 21) {
+      return { found: false, reason: 'wrong_prefix', value: candidateRun.substring(0, 2) };
+    }
+  }
+
+  return { found: false, reason: 'no_folio' };
+}
+
+// ── Capa 6: log de intentos (fire-and-forget) ───────────────────
+function logFolioAttempt(tel, userId, folio, attemptType, outcome, trace) {
+  sbRpc("log_folio_attempt", {
+    p_phone: tel,
+    p_user_id: userId || null,
+    p_folio: folio,
+    p_attempt_type: attemptType,
+    p_outcome: outcome,
+  }, trace).catch(() => {
+    metrics.folio_attempt_log_fail = (metrics.folio_attempt_log_fail || 0) + 1;
+  });
+}
+
+// ── Helper: orquestador completo para procesar un folio ─────────
+// Devuelve { allow: bool, response?: string, reason?: string, telemetry?: {} }
+// Si allow=false, response contiene mensaje a enviar al user (o null si silent skip).
+async function smartFolioGate(tel, folio, userId, trace) {
+  // Filtro 1: dedup local (mismo folio del mismo user en <15s)
+  const localDup = checkLocalFolioDedup(tel, folio);
+  if (localDup.duplicate) {
+    metrics.smart_filter_dedup_local = (metrics.smart_filter_dedup_local || 0) + 1;
+    log.info(trace, `SMART FILTER: dedup local — folio ${folio} repetido ${Math.round(localDup.ageMs/1000)}s atrás`);
+    logFolioAttempt(tel, userId, folio, 'duplicate_send', 'blocked_local', trace);
+    // Si la primera fue exitosa, recordatorio amable
+    if (localDup.outcome === 'success') {
+      return { 
+        allow: false, 
+        response: `Ya recibí ese folio hace unos segundos ✅\n\nDame un momento para procesarlo. Si no recibes el link en 30s, escribe *MI LINK*.`,
+      };
+    }
+    return { 
+      allow: false, 
+      response: null, // silent skip — el primero ya está procesando
+    };
+  }
+
+  // Filtro 2: patrón de spam en BD (últimos 90s)
+  const spam = await detectFolioSpam(tel, folio, trace);
+  if (spam?.is_duplicate_send && spam.same_folio_recent_count > 1) {
+    metrics.smart_filter_dedup_bd = (metrics.smart_filter_dedup_bd || 0) + 1;
+    log.info(trace, `SMART FILTER: dedup BD — ${spam.same_folio_recent_count} intentos del mismo folio`);
+    logFolioAttempt(tel, userId, folio, 'duplicate_send', 'blocked_bd', trace);
+    return { 
+      allow: false,
+      response: `Estoy procesando ese folio, *espera un momento* 🕐\n\nSi no recibes respuesta en 30s, escribe *MI LINK*.`,
+    };
+  }
+
+  if (spam?.is_rapid_fire) {
+    metrics.smart_filter_rapid_fire = (metrics.smart_filter_rapid_fire || 0) + 1;
+    log.warn(trace, `SMART FILTER: rapid-fire detected — ${spam.distinct_folios_in_90s} folios distintos en 90s`);
+    logFolioAttempt(tel, userId, folio, 'preview', 'rate_limited', trace);
+    // Crear alerta crítica si es un patrón muy agresivo (5+ folios)
+    if (spam.distinct_folios_in_90s >= 5) {
+      sbRpc("create_alert", {
+        p_severity: 'warn',
+        p_category: 'spam',
+        p_message: `Usuario ${tel} mandó ${spam.distinct_folios_in_90s} folios en 90s — posible abuso`,
+        p_metadata: { phone: tel, count: spam.distinct_folios_in_90s },
+      }, trace).catch(() => {});
+    }
+    return {
+      allow: false,
+      response: `Estás enviando muchos folios muy rápido 🛑\n\nEspera 1 minuto antes de mandar otro.\n\nSi tienes problemas, escribe *SOPORTE*.`,
+    };
+  }
+
+  if (spam?.is_insistent) {
+    metrics.smart_filter_insistent = (metrics.smart_filter_insistent || 0) + 1;
+    log.info(trace, `SMART FILTER: insistencia — ${spam.same_folio_recent_count} intentos del mismo folio`);
+    logFolioAttempt(tel, userId, folio, 'duplicate_send', 'blocked_insistent', trace);
+    return {
+      allow: false,
+      response: `Ese folio ya lo intentamos varias veces 🤔\n\nSi crees que es un error, escribe *SOPORTE* y un humano lo revisará.\n\n¿Tienes otro ticket? Mándalo.`,
+    };
+  }
+
+  // Filtro 3: colisión cross-user (si tenemos userId)
+  if (userId) {
+    const collision = await detectCrossUserCollision(folio, userId, trace);
+    if (collision?.collision_detected && collision.other_attempters_count > 0) {
+      metrics.smart_filter_collision = (metrics.smart_filter_collision || 0) + 1;
+      log.warn(trace, `SMART FILTER: colisión cross-user — folio ${folio} también intentado por ${collision.other_attempters_count} otros teléfonos`);
+      // No bloqueamos, pero alertamos a admins
+      sbRpc("create_alert", {
+        p_severity: 'critical',
+        p_category: 'collision',
+        p_message: `Folio ${folio.slice(-6)} intentado por ${collision.other_attempters_count + 1} teléfonos en 5 min`,
+        p_metadata: { folio, current_user: userId, other_phones: collision.other_phones },
+      }, trace).catch(() => {});
+    }
+  }
+
+  // Filtro 4: lock distribuido — adquirir antes de procesar
+  if (userId) {
+    const lock = await tryAcquireFolioLock(folio, userId, tel, trace);
+    if (!lock.acquired) {
+      metrics.smart_filter_inflight_blocked = (metrics.smart_filter_inflight_blocked || 0) + 1;
+      log.info(trace, `SMART FILTER: folio ${folio} ya está in-flight (${lock.held_seconds}s, same_phone=${lock.same_phone})`);
+      logFolioAttempt(tel, userId, folio, 'inflight_blocked', 'blocked', trace);
+      // Si el lock es del MISMO phone, es retry duplicado
+      if (lock.same_phone) {
+        return {
+          allow: false,
+          response: `Ya estoy procesando ese folio, dame ${Math.max(5, Math.round(30 - lock.held_seconds))}s ⏱️`,
+        };
+      }
+      // Si es de OTRO phone, alguien más lo tiene — race entre users (cross-user)
+      sbRpc("create_alert", {
+        p_severity: 'critical',
+        p_category: 'collision',
+        p_message: `RACE detectado: ${tel} intentó folio ${folio.slice(-6)} mientras ${lock.held_by_phone} lo procesaba`,
+        p_metadata: { folio, attempter: tel, holder: lock.held_by_phone },
+      }, trace).catch(() => {});
+      return {
+        allow: false,
+        response: `Hubo un problema temporal con ese folio 🔄\n\nIntenta de nuevo en 30 segundos. Si persiste, escribe *SOPORTE*.`,
+      };
+    }
+  }
+
+  return { allow: true, telemetry: { spam, has_lock: !!userId } };
+}
+
+// ════════════════════════════════════════════════════════════════
+// v3.42 ADMIN COMMANDS — comandos especiales desde teléfono admin
+// ════════════════════════════════════════════════════════════════
+const adminPhonesCache = new Set();
+let adminPhonesLastSync = 0;
+
+async function refreshAdminPhones(trace) {
+  if (Date.now() - adminPhonesLastSync < 5 * 60 * 1000) return;
+  try {
+    const res = await sbGet('admin_phones?active=eq.true&select=phone', trace);
+    if (Array.isArray(res)) {
+      adminPhonesCache.clear();
+      res.forEach(r => adminPhonesCache.add(r.phone));
+      adminPhonesLastSync = Date.now();
+      log.info(trace, `Admin phones refreshed: ${adminPhonesCache.size} active`);
+    }
+  } catch (e) {
+    log.warn(trace, `refreshAdminPhones failed: ${e.message}`);
+  }
+}
+
+function isAdminPhoneLocal(tel) {
+  return adminPhonesCache.has(tel);
+}
+
+// Comandos admin reconocidos:
+//   ESTADO <username>     — info de usuario
+//   TOP10                  — leaderboard top 10
+//   SALUD                  — health check
+//   LIBERAR <folio>        — liberar folio canjeado
+function detectAdminCommand(texto) {
+  const t = texto.trim();
+  const upper = t.toUpperCase();
+
+  // ESTADO <username>
+  const mEstado = t.match(/^ESTADO\s+([a-zA-Z0-9_]{3,20})$/i);
+  if (mEstado) return { cmd: 'estado', arg: mEstado[1] };
+
+  // TOP <n> o TOP10 etc.
+  const mTop = upper.match(/^TOP\s*(\d{1,3})?$/);
+  if (mTop) return { cmd: 'top', arg: parseInt(mTop[1] || '10', 10) };
+
+  if (upper === 'SALUD' || upper === 'HEALTH' || upper === 'STATUS') return { cmd: 'salud' };
+
+  // LIBERAR <folio>
+  const mLib = t.match(/^LIBERAR\s+(84\d{19})$/i);
+  if (mLib) return { cmd: 'liberar', arg: mLib[1] };
+
+  return null;
+}
+
+async function handleAdminCommand(tel, cmd, trace) {
+  log.info(trace, `Admin command from ${tel}: ${cmd.cmd}(${cmd.arg || ''})`);
+  metrics.admin_commands = (metrics.admin_commands || 0) + 1;
+
+  try {
+    switch (cmd.cmd) {
+      case 'estado': {
+        const res = await sbRpc("admin_get_user_state", { p_admin_phone: tel, p_username: cmd.arg }, trace);
+        if (!res?.found) {
+          return enviar(tel, `❌ No encontré usuario *${cmd.arg}*.\n\nPrueba con otro apodo o revisa que esté bien escrito.`, trace);
+        }
+        const p = res.profile;
+        const tickets = res.tickets || [];
+        const sessions = res.sessions || [];
+        const attempts = res.recent_attempts || [];
+        const blocked = p.wa_blocked ? `\n🚫 BLOQUEADO: ${p.wa_block_reason || '(sin razón)'}` : '';
+        const ticketsStr = tickets.length === 0 ? '_(sin tickets)_' :
+          tickets.slice(0, 5).map(t => 
+            `  · ${t.code.slice(-6)} ${t.has_session ? (t.session_complete ? '✅' : '🎮') : '⏳'}`
+          ).join('\n');
+        const attemptsStr = attempts.length === 0 ? '_(sin intentos recientes)_' :
+          attempts.slice(0, 5).map(a => 
+            `  · ${a.folio.slice(-6)} → ${a.outcome}`
+          ).join('\n');
+        const msg = `📋 *Estado de ${p.wa_username}*\n\n` +
+          `📱 ${p.wa_phone}\n` +
+          `📊 ${p.wa_puntos_total} pts · ${p.wa_rondas_total} rondas (hoy: ${p.wa_rondas_hoy})\n` +
+          `🎫 Folio actual: ${p.current_ticket_code ? p.current_ticket_code.slice(-6) : '_(ninguno)_'}\n` +
+          `📍 Fase: ${p.wa_phase || 'desconocido'}${blocked}\n\n` +
+          `*Tickets recientes:*\n${ticketsStr}\n\n` +
+          `*Intentos últimas 24h:*\n${attemptsStr}`;
+        return enviar(tel, msg, trace);
+      }
+
+      case 'top': {
+        const n = Math.min(Math.max(cmd.arg || 10, 1), 25);
+        const list = await sbRpc("admin_top_n", { p_admin_phone: tel, p_n: n }, trace);
+        if (!Array.isArray(list)) {
+          return enviar(tel, `❌ Error obteniendo top ${n}`, trace);
+        }
+        const lines = list.map(r => `${r.rank}. *${r.user}* — ${fmt(r.puntos)} pts (${r.rondas}r)`).join('\n');
+        return enviar(tel, `🏆 *Top ${n}*\n\n${lines}`, trace);
+      }
+
+      case 'salud': {
+        const h = await sbRpc("admin_health_check", { p_admin_phone: tel }, trace);
+        if (h?.error) return enviar(tel, `❌ ${h.error}`, trace);
+        const top3 = (h.leaderboard_top3 || []).map((t, i) => `${i+1}. ${t.user}: ${fmt(t.pts)}`).join('\n');
+        const msg = `🏥 *Salud del sistema*\n` +
+          `_${h.fecha_hora}_\n\n` +
+          `👥 Usuarios: ${h.usuarios_registrados} reg · ${h.usuarios_con_puntos} con pts\n` +
+          `🎫 Tickets: ${h.tickets_canjeados_total} total\n` +
+          `   ⏳ Pendientes: ${h.tickets_pendientes_jugar}\n` +
+          `   🚨 Atascados (>2h): ${h.tickets_pendientes_atascados}\n` +
+          `🎮 Rondas: ${h.rondas_jugadas_total} total · ${h.rondas_hoy} hoy\n\n` +
+          `📡 *Última hora*\n` +
+          `   Webhooks: ${h.webhooks_ultima_hora} (${h.webhooks_fallidos_ultima_hora} fail)\n` +
+          `   Folio attempts: ${h.folio_attempts_ultima_hora} (${h.folio_attempts_blocked_ultima_hora} blocked)\n\n` +
+          `🔒 In-flight: ${h.folios_inflight_ahora}\n` +
+          `🔗 Short links activos: ${h.short_links_activos}\n` +
+          `📨 Soporte pendiente: ${h.soporte_reports_pendientes}\n\n` +
+          `🏆 *Top 3*\n${top3}`;
+        return enviar(tel, msg, trace);
+      }
+
+      case 'liberar': {
+        const res = await sbRpc("admin_release_folio", { p_admin_phone: tel, p_folio: cmd.arg }, trace);
+        if (res?.error) {
+          return enviar(tel, `❌ No se pudo liberar ${cmd.arg.slice(-6)}: ${res.error}\n${res.hint || ''}`, trace);
+        }
+        return enviar(tel, `✅ Folio ${cmd.arg.slice(-6)} liberado.\n\nEl usuario que lo tenía ahora puede canjearlo de nuevo (o tú).`, trace);
+      }
+
+      default:
+        return enviar(tel, `Comando desconocido. Usa: ESTADO <user>, TOP10, SALUD, LIBERAR <folio>`, trace);
+    }
+  } catch (e) {
+    log.error(trace, `handleAdminCommand error:`, e);
+    return enviar(tel, `❌ Error procesando comando: ${e.message}`, trace);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// v3.42 ALERTS POLLER — revisa alertas pendientes y notifica admins
+// ════════════════════════════════════════════════════════════════
+async function pollAndDeliverAlerts() {
+  try {
+    const res = await sbRpc("get_pending_alerts", { p_limit: 5 }, null);
+    if (!res?.alerts || res.alerts.length === 0) return;
+    const adminPhones = res.admin_phones || [];
+    if (adminPhones.length === 0) return;
+
+    const sentIds = [];
+    for (const alert of res.alerts) {
+      const icon = alert.severity === 'critical' ? '🚨' : (alert.severity === 'warn' ? '⚠️' : 'ℹ️');
+      const msg = `${icon} *Alerta del bot*\n_${alert.category}_\n\n${alert.message}`;
+      for (const phone of adminPhones) {
+        try {
+          await enviar(phone, msg, `alert_${alert.id}`);
+        } catch (e) {
+          log.warn(null, `Alert delivery to ${phone} failed: ${e.message}`);
+        }
+      }
+      sentIds.push(alert.id);
+    }
+    if (sentIds.length > 0) {
+      await sbRpc("mark_alerts_notified", { p_alert_ids: sentIds }, null);
+      log.info(null, `Delivered ${sentIds.length} alerts to ${adminPhones.length} admin(s)`);
+    }
+  } catch (e) {
+    log.warn(null, `pollAndDeliverAlerts error: ${e.message}`);
+  }
+}
+
+// Iniciar el poller al boot del bot
+setInterval(pollAndDeliverAlerts, ALERT_POLL_INTERVAL_MS);
+setInterval(() => refreshAdminPhones(null).catch(() => {}), 5 * 60 * 1000);
+// Refresh inicial al boot (con 5s delay para que sbRpc esté listo)
+setTimeout(() => refreshAdminPhones(null).catch(() => {}), 5000);
+
 async function procesarMensajeCore(tel, texto, trace) {
   atLog(tel, texto, 'in', getSesion(tel).fase);
+
+  // v3.42 ADMIN COMMANDS: intercepción temprana antes de cualquier handler regular.
+  // Solo se evalúa si el teléfono es admin Y el texto matchea pattern de comando.
+  if (isAdminPhoneLocal(tel)) {
+    const adminCmd = detectAdminCommand(texto);
+    if (adminCmd) {
+      return handleAdminCommand(tel, adminCmd, trace);
+    }
+  }
 
   const intencion = detectarIntencion(texto);
   let s = getSesion(tel);
@@ -2355,11 +2934,15 @@ async function procesarMensajeCore(tel, texto, trace) {
     if (!claimRes?.success) {
       metrics.claim_fail++;
       log.error(trace, "Claim fallido tras register:", JSON.stringify(claimRes));
+      logFolioAttempt(tel, newUserId, pendFolio, 'claim', claimRes?.error || 'fail', trace);
+      registerLastFolio(tel, pendFolio, claimRes?.error || 'fail');
       setSesion(tel, { fase: "activo", username: finalUsername, userId: newUserId, pendingFolio: null });
       sbRpc("clear_pending_registration", { p_phone: tel }, trace).catch(() => {});
       return enviar(tel, M.folioError(claimRes?.error || "already_used"), trace);
     }
     metrics.claim_ok++;
+    logFolioAttempt(tel, newUserId, pendFolio, 'claim', 'success', trace);
+    registerLastFolio(tel, pendFolio, 'success');
 
     // v3.40 ANTI-GHOST: verificar que el ticket SÍ quedó en BD antes de mandar magic link.
     // Race conditions o triggers pueden hacer rollback silencioso. Si esto pasó,
@@ -2368,6 +2951,12 @@ async function procesarMensajeCore(tel, texto, trace) {
     if (!postClaimStatus?.has_ticket) {
       metrics.claim_ghost = (metrics.claim_ghost || 0) + 1;
       log.error(trace, `GHOST CLAIM detectado tras register: claim returned success pero ticket no existe en BD. user=${newUserId} folio=${pendFolio}`);
+      sbRpc("create_alert", {
+        p_severity: 'critical',
+        p_category: 'ghost_claim',
+        p_message: `Ghost claim post-register: folio ${pendFolio.slice(-6)} user ${finalUsername}`,
+        p_metadata: { folio: pendFolio, user_id: newUserId, phone: tel },
+      }, trace).catch(() => {});
       setSesion(tel, { fase: "activo", username: finalUsername, userId: newUserId, pendingFolio: null });
       sbRpc("clear_pending_registration", { p_phone: tel }, trace).catch(() => {});
       return enviar(tel, `Hubo un problema al guardar tu folio en el sistema. Por favor envíalo de nuevo en unos segundos — si vuelve a fallar, escribe *SOPORTE*.`, trace);
@@ -2417,28 +3006,91 @@ async function procesarMensajeCore(tel, texto, trace) {
     }  // cierra else (no folio_input en esperando_username)
   }  // cierra if (s.fase === "esperando_username")
 
-  const looksLikeFolio = /^\d{10,}$/.test(texto.replace(/\s/g, ""));
-  if (intencion === "folio_input" || (s.fase === "esperando_folio" && looksLikeFolio)) {
-    const num = texto.replace(/\s/g, "");
-    const localVal = validarFormatoFolioLocal(num);
-    if (!localVal.ok) {
+  // v3.42: looksLikeFolio ahora más estricto — debe empezar con 84 y ser 21 dígitos.
+  // Esto evita que números de teléfono u otros números largos se interpreten como folio.
+  const looksLikeFolio = /^84\d{19}$/.test(texto.replace(/\s/g, ""));
+  // v3.42: también activamos el handler si extraerFolioInteligente encuentra un folio
+  // (esto cubre folios embebidos en texto: "mi folio es 8412...")
+  const smartExtracted = extraerFolioInteligente(texto);
+
+  if (intencion === "folio_input" || (s.fase === "esperando_folio" && looksLikeFolio) || smartExtracted.found) {
+    let folio;
+
+    // Path A: extracción inteligente exitosa
+    if (smartExtracted.found) {
+      folio = smartExtracted.folio;
+      if (smartExtracted.method === 'multi') {
+        log.info(trace, `Múltiples folios detectados, procesando ${folio}; ignorados: ${smartExtracted.others.join(', ')}`);
+        metrics.folio_multi_input = (metrics.folio_multi_input || 0) + 1;
+      } else if (smartExtracted.method === 'embedded') {
+        log.info(trace, `Folio extraído de texto libre: ${folio}`);
+        metrics.folio_embedded_input = (metrics.folio_embedded_input || 0) + 1;
+      }
+    } 
+    // Path B: extracción falló pero parece intento de folio — mensaje específico
+    else if (smartExtracted.reason === 'too_short') {
       setSesion(tel, { intentos: (s.intentos || 0) + 1 });
-      return enviar(tel, M.folioError(localVal.error), trace);
+      return enviar(tel, 
+        `Tu folio está incompleto, *te faltan ${smartExtracted.missing_digits} dígitos* 📏\n\n` +
+        `🎫 El folio tiene exactamente *21 dígitos* y empieza con *84*.\n\n` +
+        `Revisa el ticket y mándalo completo.`, trace);
+    } else if (smartExtracted.reason === 'too_long') {
+      setSesion(tel, { intentos: (s.intentos || 0) + 1 });
+      return enviar(tel,
+        `Tu folio tiene *${smartExtracted.extra_digits} dígitos de más* 📏\n\n` +
+        `🎫 El folio tiene exactamente *21 dígitos*. Quizás copiaste otro número junto.\n\n` +
+        `Revisa el ticket — empieza con *84*.`, trace);
+    } else if (smartExtracted.reason === 'wrong_prefix') {
+      setSesion(tel, { intentos: (s.intentos || 0) + 1 });
+      return enviar(tel, M.folioError("prefijo"), trace);
+    } else {
+      // Caer al validador legacy por compatibilidad
+      const num = texto.replace(/\s/g, "");
+      const localVal = validarFormatoFolioLocal(num);
+      if (!localVal.ok) {
+        setSesion(tel, { intentos: (s.intentos || 0) + 1 });
+        return enviar(tel, M.folioError(localVal.error), trace);
+      }
+      folio = localVal.folio;
     }
-    const folio = localVal.folio;
+
+    // ═══════════════════════════════════════════════════════════════
+    // v3.42 SMART FILTERS GATE — bloquear dups, spam, race antes de RPC
+    // ═══════════════════════════════════════════════════════════════
+    const gate = await smartFolioGate(tel, folio, userId, trace);
+    if (!gate.allow) {
+      // Bloqueado por filtros. Si hay response, enviarlo; si no, silent skip.
+      if (gate.response) {
+        return enviar(tel, gate.response, trace);
+      }
+      log.info(trace, `Smart filter silent skip para folio ${folio}`);
+      return;
+    }
+
+    // A partir de aquí, garantizamos que: 
+    //   1. No es duplicado dentro de 15s
+    //   2. No es spam (rapid-fire ni insistencia)
+    //   3. Lock distribuido adquirido (si tenemos userId)
+    // El lock se libera automáticamente tras 30s o cuando llamemos releaseFolioLock.
+
     const previewParams = userId ? { p_code: folio, p_user_id: userId } : { p_code: folio };
     const preview = await sbRpc("preview_ticket", previewParams, trace);
 
     if (preview === null) {
       log.warn(trace, "preview_ticket null — Supabase posiblemente saturado");
+      if (userId) releaseFolioLock(folio, trace);
       return enviar(tel, M.servidorSaturado(), trace);
     }
     if (!preview?.success) {
       metrics.preview_ticket_fail++;
       setSesion(tel, { intentos: (s.intentos || 0) + 1 });
+      logFolioAttempt(tel, userId, folio, 'preview', preview?.error || 'invalid', trace);
+      registerLastFolio(tel, folio, preview?.error || 'invalid');
+      if (userId) releaseFolioLock(folio, trace);
       return enviar(tel, M.folioError(preview?.error || "invalid_format"), trace);
     }
     metrics.preview_ticket_ok++;
+    logFolioAttempt(tel, userId, folio, 'preview', 'success', trace);
 
     // v3.35 BUG2 FIX: si caché perdió username/userId, recuperar de BD antes de pedir apodo
     // Solo intentamos recover si el cache NO indica explícitamente que el usuario es nuevo
@@ -2487,7 +3139,10 @@ async function procesarMensajeCore(tel, texto, trace) {
         }
       }
 
-      if (rondasHoy >= RONDAS_MAX) return enviar(tel, M.maxRondas(username), trace);
+      if (rondasHoy >= RONDAS_MAX) {
+        if (userId) releaseFolioLock(folio, trace);
+        return enviar(tel, M.maxRondas(username), trace);
+      }
 
       const claimRes = await sbRpc("validate_and_claim_ticket", {
         p_code: folio, p_user_id: userId,
@@ -2495,9 +3150,12 @@ async function procesarMensajeCore(tel, texto, trace) {
 
       if (!claimRes?.success) {
         metrics.claim_fail++;
+        logFolioAttempt(tel, userId, folio, 'claim', claimRes?.error || 'fail', trace);
+        registerLastFolio(tel, folio, claimRes?.error || 'fail');
 
         if (claimRes?.error === 'session_active') {
           log.info(trace, `session_active detectado — regenerando magic link`);
+          if (userId) releaseFolioLock(folio, trace);
           const linkRes = await waAuth("get_link", { phone: tel }, trace);
           if (linkRes?.magic_link) {
             metrics.session_active_relinks++;
@@ -2505,18 +3163,35 @@ async function procesarMensajeCore(tel, texto, trace) {
             const shortRelink = await crearShortLink(userId, linkRes.magic_link, trace);
             return enviar(tel, M.reenvioLink(username, shortRelink), trace);
           }
+          // v3.42: fallback a short_link existente en BD si waAuth falló
+          const existingCode = await sbRpc("get_user_active_short_link", { p_user_id: userId }, trace);
+          if (existingCode && typeof existingCode === "string") {
+            log.info(trace, `Short link de BD reutilizado: ${existingCode}`);
+            return enviar(tel, M.reenvioLink(username, `${SITE_URL}/j/${existingCode}`), trace);
+          }
           log.warn(trace, `session_active sin link — fallback a mensaje de texto`);
         }
 
+        if (userId) releaseFolioLock(folio, trace);
         return enviar(tel, M.folioError(claimRes?.error || "already_used"), trace);
       }
       metrics.claim_ok++;
+      logFolioAttempt(tel, userId, folio, 'claim', 'success', trace);
+      registerLastFolio(tel, folio, 'success');
 
       // v3.40 ANTI-GHOST: verificar que el ticket SÍ quedó en BD antes de mandar magic link
       const postClaimStatus2 = await getTicketStatus(userId, folio, trace);
       if (!postClaimStatus2?.has_ticket) {
         metrics.claim_ghost = (metrics.claim_ghost || 0) + 1;
         log.error(trace, `GHOST CLAIM (folio adicional): claim success pero ticket no existe. user=${userId} folio=${folio}`);
+        // Alertar admins
+        sbRpc("create_alert", {
+          p_severity: 'critical',
+          p_category: 'ghost_claim',
+          p_message: `Ghost claim: folio ${folio.slice(-6)} claim success pero ticket no en BD`,
+          p_metadata: { folio, user_id: userId, phone: tel },
+        }, trace).catch(() => {});
+        if (userId) releaseFolioLock(folio, trace);
         return enviar(tel, `Hubo un problema al guardar tu folio. Por favor envíalo de nuevo en unos segundos — si vuelve a fallar, escribe *SOPORTE*.`, trace);
       }
 
@@ -2535,10 +3210,18 @@ async function procesarMensajeCore(tel, texto, trace) {
 
       const linkRes = await waAuth("get_link", { phone: tel }, trace);
       if (!linkRes?.magic_link) {
+        // v3.42: fallback a short_link existente en BD
+        const existingCode = await sbRpc("get_user_active_short_link", { p_user_id: userId }, trace);
+        if (existingCode && typeof existingCode === "string") {
+          if (userId) releaseFolioLock(folio, trace);
+          return enviar(tel, M.folioAdicional(username, rondaParaMostrar, `${SITE_URL}/j/${existingCode}`), trace);
+        }
+        if (userId) releaseFolioLock(folio, trace);
         return enviar(tel, `Folio registrado, *${username}*.\nVe a *${SITE_URL}* para jugar.\nRonda *${rondaParaMostrar}* de *${RONDAS_MAX}* hoy.`, trace);
       }
       log.info(trace, `Magic link generado: ${maskLink(linkRes.magic_link)}`);
       const shortFolio = await crearShortLink(userId, linkRes.magic_link, trace);
+      if (userId) releaseFolioLock(folio, trace);
       return enviar(tel, M.folioAdicional(username, rondaParaMostrar, shortFolio), trace);
     }
 
@@ -2548,6 +3231,9 @@ async function procesarMensajeCore(tel, texto, trace) {
     sbRpc("set_pending_registration", { p_phone: tel, p_folio: folio }, trace).catch(() => {
       metrics.pending_reg_persist_fail = (metrics.pending_reg_persist_fail || 0) + 1;
     });
+    // v3.42: registrar y liberar lock (el folio queda en pendingFolio, no hay claim aún)
+    registerLastFolio(tel, folio, 'pending_username');
+    if (userId) releaseFolioLock(folio, trace);
     return enviar(tel, M.folioOkPideNombre(storeInfo?.name, storeInfo?.brand || "Grupo Nutrisa"), trace);
   }
 
