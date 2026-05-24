@@ -1,7 +1,10 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRISA — BOT v3.43 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRISA — BOT v3.46 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutrisa · WhatsApp-native                       ║
 // ║                                                                              ║
+// ║  v3.46: User Blocking System — admin BLOQUEAR/DESBLOQUEAR + descalificación  ║
+// ║  v3.45: Master Key infinito + refactor por secciones con candados            ║
+// ║  v3.44: Dashboard ejecutivo Airtable + sync hourly                           ║
 // ║  v3.43: Legal compliance — timeout sesión 6h + nombres minijuegos + fechas   ║
 // ║  v3.42: Smart filters + admin commands + alerts                              ║
 // ║  v3.41: Cross-réplica esperando_username refresh + MI LINK fallback BD       ║
@@ -13,6 +16,96 @@
 // ║  v3.35: Caché stale-aware + retry robusto + ortografía Nutrisa               ║
 // ║  v3.34: Multi-réplica safe — dedupe distribuido + fase en BD                 ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
+//
+// ════════════════════════════════════════════════════════════════════════════════
+// 📑 TABLA DE CONTENIDOS (use Ctrl+F con el §N para saltar a una sección)
+// ════════════════════════════════════════════════════════════════════════════════
+//
+//   §0  CHANGELOG DETALLADO POR VERSIÓN
+//   §1  CONFIG & CONSTANTES         — env vars, IDs, constantes legales
+//   §2  CONEXIÓN A BD / SERVICIOS   — Supabase, Airtable, WhatsApp API, throttling
+//   §3  HELPERS                     — logging, fetch, fechas, validators
+//   §4  MENSAJES DEL BOT (M.xxx)    — todos los textos que envía el bot
+//   §5  FILTROS ANTI-FRAUDE         — smart filters 6-capas + profanity
+//   §6  ADMIN COMMANDS              — ESTADO, TOP10, SALUD, LIBERAR + alerts
+//   §7  HANDLERS DE FASE            — esperando_username, esperando_folio, etc.
+//   §8  WEBHOOK ENTRY (Meta API)    — entrada de mensajes WhatsApp
+//   §9  ENDPOINTS HTTP              — /j/:code, /game-complete, /health, etc.
+//   §10 BROADCASTS + CLEANUP        — procesos asíncronos
+//   §11 STARTUP                     — validación env + arranque servidor
+//
+// ════════════════════════════════════════════════════════════════════════════════
+// 🔒 CANDADOS — qué tocar y qué NO tocar
+// ════════════════════════════════════════════════════════════════════════════════
+//
+//   ✏️ ZONAS SEGURAS PARA EDITAR:
+//      • §4 MENSAJES (M.xxx): copy de los mensajes del bot. Cambiarlo no afecta
+//        lógica, solo lo que el usuario lee.
+//      • §1 constantes legales (fechas, premios, teléfonos): texto/datos.
+//
+//   ⚠️ ZONAS DE CUIDADO (editar con cautela):
+//      • §5 SMART FILTERS: lógica de defensa contra abuso. Romperla = fraude.
+//      • §7 HANDLERS DE FASE: máquina de estados del usuario. Romper una fase
+//        rompe el flow completo.
+//      • §6 ADMIN COMMANDS: si tocas los códigos o nombres, los admins pierden
+//        acceso desde WhatsApp.
+//
+//   🔴 ZONAS PROHIBIDAS (no tocar sin tener clarísimo qué hace):
+//      • §2 sbRpc, waAuth: capa de comunicación con backends. Si falla, todo
+//        el bot deja de funcionar.
+//      • §3 verifyMetaSignature, checkIpRate: seguridad. Romper = riesgo grave.
+//      • §8 webhook handler: punto de entrada. Cualquier error = mensajes
+//        perdidos.
+//      • §11 startup: si falla, el bot ni arranca.
+//
+//   📝 REGLA GENERAL: cualquier cambio en §5, §6, §7, §8 debe probarse en
+//      desarrollo antes de subir a producción. Editar §4 (mensajes) es seguro
+//      hot-deploy. El frontend lo maneja un equipo separado.
+//
+// ════════════════════════════════════════════════════════════════════════════════
+//
+// ─── NUEVO EN v3.46 (24 may 2026 — User Blocking System) ─────────────────────
+// Sistema completo de bloqueo de usuarios por incumplimiento de T&Cs:
+//
+// 1) COMANDOS ADMIN desde WhatsApp:
+//    • BLOQUEAR <user_or_phone> [razón opcional]  → bloquea + notifica
+//    • DESBLOQUEAR <user_or_phone>                → desbloquea + limpia cache
+//    • BLOQUEADOS                                 → lista todos los bloqueados
+//
+// 2) NOTIFICACIÓN AL BLOQUEADO:
+//    • Proactiva: al momento del bloqueo, el bot envía mensaje al usuario
+//      diciendo que ha sido descalificado + motivo + cómo apelar (soporte).
+//    • Reactiva: si el bloqueado intenta usar el bot después, recibe mensaje
+//      de recordatorio (rate-limited a 1 cada 5min para evitar spam).
+//
+// 3) BD: columnas blocked_at, blocked_reason, blocked_by_phone, 
+//    blocked_notified_at en profiles. RPCs admin_block_user, admin_unblock_user,
+//    check_user_blocked, mark_blocked_notified, admin_list_blocked_users.
+//
+// 4) DASHBOARD: usuarios bloqueados aparecen con status "Bloqueado" en
+//    Airtable, separados de "Activo" / "Inactivo 7d+" / "Sospechoso".
+//
+// ─── NUEVO EN v3.45 (24 may 2026 — Master Key + Refactor) ────────────────────
+// 1) MASTER KEY infinito: folios que empiezan con `999` son master keys
+//    reservados para testing del equipo. Saltan TODAS las validaciones
+//    (fecha, tienda, expiración, ya usado, límite diario). Cada uso:
+//    • Marca al user como master_key_user (excluido del leaderboard)
+//    • Se registra en master_key_log (auditable: quién, cuándo)
+//    • Genera código sintético sucursal=32000 (interna)
+//    Pool actual: 999000000000000000001 a 999000000000000000100
+//
+// 2) REFACTOR de organización con secciones §1-§11 y candados.
+//    Sin cambios funcionales. Solo headers/comentarios para que el código
+//    sea mantenible. Ver tabla de contenidos arriba.
+//
+// 3) NOMBRES PERSONALES removidos del código (Mohamed, etc.) — referencias
+//    cambiadas a "equipo web" / "frontend dev" genérico.
+//
+// ─── NUEVO EN v3.44 (24 may 2026 — Dashboard ejecutivo) ──────────────────────
+// Dashboard Airtable independiente (base appkr4nVF1hFsTWy4) con 5 tablas:
+//   Snapshots Diarios, Usuarios, Tiendas, Leaderboard Top 100, Alertas Fraude.
+// Edge function `dashboard-sync-airtable` con cron horario + 6h para fraude.
+// 6 RPCs read-only de aggregación. CERO impacto en bot/producción.
 //
 // ─── NUEVO EN v3.43 (23 may 2026 — legal compliance del doc oficial) ─────────
 // Auditoría del documento legal "ByMP - PIN - FANATICOS DEL SABOR - Promo
@@ -30,7 +123,7 @@
 //    - Paredones (Chilim Balam) — antes "Pongoal"
 //    - Tiro a Puerta (Cielito Querido Café) — antes "Free Throw"
 //    - La Afición (Moyo) — ya estaba correcto
-//    (El cambio en frontend lo aplica Mohamed; aquí solo el copy del bot.)
+//    (El cambio en frontend lo aplica el equipo web; aquí solo el copy del bot.)
 //
 // 3) FECHAS LEGALES (constantes): separadas CAMPAIGN_PURCHASE_END (9 jul) y
 //    CAMPAIGN_REGISTER_END (12 jul, 3 días después). WINNERS_ANNOUNCE_DATE,
@@ -145,7 +238,7 @@
 // 4 puntos actualizados: registroCompleto, folioAdicional, reenvioLink, miLink
 // Fallback automático: si crearShortLink falla, se envía el magic link directo.
 //
-// Mohamed configuró el Netlify redirect: /j/* → Railway bot /j/*
+// El equipo web configuró el Netlify redirect: /j/* → Railway bot /j/*
 //
 // ─── NUEVO EN v3.38 (22 may 2026 — copy review) ─────────────────────────────
 // Pasada completa a todos los mensajes para tono más formal y profesional:
@@ -296,8 +389,16 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
-// ─── ENV ────────────────────────────────────────────────────────────────────
-const VERSION         = "3.43";
+// ════════════════════════════════════════════════════════════════════════════
+// §1 · CONFIG & CONSTANTES
+// ════════════════════════════════════════════════════════════════════════════
+// 🔒 CANDADO: cambiar valores aquí afecta toda la lógica del bot.
+//    ✏️ Seguro: VERSION, fechas legales, IMG_FOLIO, IDs de Airtable.
+//    ⚠️ Cuidado: RONDAS_MAX, DIAS_VALIDEZ — afectan flow del usuario.
+//    🔴 NO TOCAR: SUPABASE_URL, SECRETS, env vars — rompe todo si están mal.
+
+// ─── ENV VARS ───────────────────────────────────────────────────────────────
+const VERSION         = "3.46";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -320,6 +421,8 @@ function isValidSecret(s) {
 }
 
 // ─── AIRTABLE — Engine v2 + Bot Control ─────────────────────────────────────
+// IDs de tablas Airtable usadas para sincronizar tickets + estado del bot.
+// 🔒 NO modificar IDs salvo que se renombren tablas en el workspace.
 const AT_BASE     = "appDnuaIHpVrXTpz1";
 const AT_BOT_BASE = "apprLebqIDBaogjDJ";
 
@@ -399,11 +502,14 @@ const AT_TABLES = {
 };
 const FB = { MSG:"fldadSOH0WyWbj622", EST:"fldEBKYSWpfXUseZa", ENV:"fldM0GtUD8Jkdn6Kr", FALL:"fld7Rug1JF1ggtd2R" };
 
-// ─── CONSTANTES ─────────────────────────────────────────────────────────────
+// ─── CONSTANTES DE NEGOCIO ──────────────────────────────────────────────────
+// Reglas del juego, fechas legales, URLs, soporte.
+// ✏️ Seguro editar: fechas legales (cuando cambie el doc), URLs, premios.
+// ⚠️ Cuidado: RONDAS_MAX y DIAS_VALIDEZ afectan flow del usuario.
 const RONDAS_MAX           = 5;
 const DIAS_VALIDEZ         = 3;
 const SITE_URL             = "https://fanaticosdelsabor.com";
-const IMG_FOLIO            = "https://i.ibb.co/TDP6mnRz/Folio.jpg";
+const IMG_FOLIO            = "https://i.ibb.co/QFXjYbV6/6-B4-B857-F-4-DA5-47-DD-B10-A-3-CA358-ADE46-E.jpg";
 
 // v3.43 LEGAL COMPLIANCE — fechas oficiales del doc legal
 const CAMPAIGN_PURCHASE_END = "9 julio";       // último día de compra
@@ -594,6 +700,13 @@ function recordError(stage, err) {
   metrics.last_error_stage = stage;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// §3 · HELPERS — funciones de soporte
+// ════════════════════════════════════════════════════════════════════════════
+// Utilidades reutilizables: logging, fechas México, validators, dedup.
+// ⚠️ Cuidado al editar: si rompes verifyMetaSignature o checkIpRate, pierdes
+//    protecciones de seguridad. El resto son utilitarios seguros.
+
 // ─── LOGGING ────────────────────────────────────────────────────────────────
 function newTrace() {
   return Math.random().toString(16).substring(2, 14).padEnd(12, '0');
@@ -680,7 +793,15 @@ function addToProcessedMsgs(id) {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// §2 · CONEXIÓN A BD / SERVICIOS EXTERNOS
+// ════════════════════════════════════════════════════════════════════════════
+// Capa de comunicación con Supabase, WhatsApp Cloud API, Airtable.
+// 🔴 ZONA PROHIBIDA: si rompes esto, el bot no puede hablar con nada.
+//    Cambios aquí requieren testing exhaustivo.
+
 // ─── SUPABASE RATE LIMITER ──────────────────────────────────────────────────
+// Throttle interno para no saturar Supabase RPC. Default: 30 req/s.
 class SupabaseLimiter {
   constructor(maxConcurrent, maxQueue) {
     this.maxConcurrent = maxConcurrent;
@@ -1308,8 +1429,12 @@ function atLog(tel, mensaje, direccion, fase) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// MENSAJES AL USUARIO
+// §4 · MENSAJES DEL BOT (M.xxx)
 // ════════════════════════════════════════════════════════════════════════════
+// Todos los textos que el bot envía al usuario por WhatsApp.
+// ✏️ ZONA SEGURA: cambiar copy aquí solo afecta lo que el usuario lee.
+//    Hot-deploy sin riesgo. Mantener las claves (bienvenidaNuevo, folioError,
+//    etc.) — son las que se invocan desde los handlers.
 
 const M = {
   bienvenidaNuevo: () =>
@@ -1659,6 +1784,29 @@ Inténtalo de nuevo en *30 segundos*. Tu folio no se ha perdido.
 
 (No es necesario reenviarlo — espera y te responderemos cuando se libere.)`,
 
+  // v3.46: mensajes para usuarios bloqueados/descalificados
+  usuarioBloqueado: (reason) =>
+`🚫 *Tu cuenta ha sido descalificada*
+
+Tu participación en la promoción *Fanáticos del Sabor* ha sido suspendida por incumplimiento de los Términos y Condiciones de la campaña.
+
+📝 *Motivo:* ${reason || 'Incumplimiento de términos y condiciones'}
+
+Esto significa que:
+• No podrás canjear más folios
+• No serás elegible para premios
+• Tu puntuación queda invalidada
+
+Si consideras que esto es un error y quieres apelar la decisión, contacta a soporte:
+📞 *800.024.0340* (L-V 9:00 a 17:00 CDMX)
+
+_Esta es una decisión final tomada por los administradores de la promoción conforme a las bases publicadas en fanaticosdelsabor.com_`,
+
+  usuarioBloqueadoRecordatorio: () =>
+`🚫 *Cuenta descalificada*
+
+Tu participación sigue suspendida. Para apelar, contacta soporte: *800.024.0340* (L-V 9-17h CDMX).`,
+
   ayuda: (u) =>
 `👋 Soy *Gol*${u ? `, tu apodo es *${u}*` : ""}.
 
@@ -1975,17 +2123,19 @@ function diasSinActividad(profile) {
   return Math.floor(diff / (1000 * 60 * 60 * 24));
 }
 
-// ─── LÓGICA PRINCIPAL ───────────────────────────────────────────────────────
-// ════════════════════════════════════════════════════════════════
-// v3.42 SMART FILTERS LAYER — defensa en profundidad para folios
-// ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// §5 · FILTROS ANTI-FRAUDE — Smart Filters Layer (6 capas)
+// ════════════════════════════════════════════════════════════════════════════
+// Defensa en profundidad contra folio reuse, race conditions, spam.
+// 🔴 ZONA CRÍTICA: romper esto = fraude posible. No editar sin testear.
+//
 // Capas:
-//  1. lastFolioByUser  — cache local de último folio enviado por user
-//  2. tryAcquireFolioLock — lock distribuido en BD para evitar race cross-réplica
-//  3. detectFolioSpamPattern — detecta spam, rapid-fire, insistencia
-//  4. detectCrossUserCollision — detecta dos users intentando el mismo folio
-//  5. extraerFolioInteligente — extrae folio de texto libre, multi-folio, etc.
-//  6. logFolioAttempt — registra TODO intento para análisis post-mortem
+//  1. lastFolioByUser  — cache local in-memory de último folio por user (15s)
+//  2. tryAcquireFolioLock — lock distribuido en BD (evita race cross-réplica)
+//  3. detectFolioSpamPattern — rapid-fire, insistencia
+//  4. detectCrossUserCollision — dos users + mismo folio (posible robo)
+//  5. extraerFolioInteligente — multi-folio, embedded en texto, formato
+//  6. logFolioAttempt — auditoría de TODO intento
 //
 // La idea: si esta capa intercepta un problema, NUNCA llegamos a
 // validate_and_claim_ticket dos veces para el mismo (user, folio).
@@ -1993,6 +2143,12 @@ function diasSinActividad(profile) {
 // ── Capa 1: cache local in-memory (rápido, sin RTT a BD) ────────
 // Map<phone, { folio, ts, outcome }>
 const lastFolioByUser = new Map();
+
+// v3.46: rate-limit del mensaje de descalificación a usuarios bloqueados.
+// Evita spam si el usuario manda muchos mensajes seguidos.
+// Map<phone, last_notify_ts_ms>. TTL: 5 minutos.
+const blockedNotifyRateLimit = new Map();
+const BLOCKED_NOTIFY_COOLDOWN_MS = 5 * 60 * 1000;
 
 function registerLastFolio(tel, folio, outcome) {
   lastFolioByUser.set(tel, { folio, ts: Date.now(), outcome });
@@ -2260,9 +2416,13 @@ async function smartFolioGate(tel, folio, userId, trace) {
   return { allow: true, telemetry: { spam, has_lock: !!userId } };
 }
 
-// ════════════════════════════════════════════════════════════════
-// v3.42 ADMIN COMMANDS — comandos especiales desde teléfono admin
-// ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// §6 · ADMIN COMMANDS — comandos especiales desde teléfono admin
+// ════════════════════════════════════════════════════════════════════════════
+// Permite que admins manejen el bot por WhatsApp sin entrar a BD.
+// Comandos: ESTADO <user>, TOP10, SALUD, LIBERAR <folio>.
+// ⚠️ Cuidado: si tocas los códigos o el cache de admin_phones, los admins
+//    pierden acceso. Para agregar admin nuevo: INSERT en tabla admin_phones.
 const adminPhonesCache = new Set();
 let adminPhonesLastSync = 0;
 
@@ -2307,6 +2467,17 @@ function detectAdminCommand(texto) {
   // LIBERAR <folio>
   const mLib = t.match(/^LIBERAR\s+(84\d{19})$/i);
   if (mLib) return { cmd: 'liberar', arg: mLib[1] };
+
+  // BLOQUEAR <user_or_phone> [razón opcional]
+  const mBlock = t.match(/^BLOQUEAR\s+(\S+)(?:\s+(.+))?$/i);
+  if (mBlock) return { cmd: 'bloquear', arg: mBlock[1], reason: mBlock[2] };
+
+  // DESBLOQUEAR <user_or_phone>
+  const mUnblock = t.match(/^DESBLOQUEAR\s+(\S+)$/i);
+  if (mUnblock) return { cmd: 'desbloquear', arg: mUnblock[1] };
+
+  // BLOQUEADOS — listar todos los bloqueados
+  if (upper === 'BLOQUEADOS') return { cmd: 'bloqueados' };
 
   return null;
 }
@@ -2384,8 +2555,97 @@ async function handleAdminCommand(tel, cmd, trace) {
         return enviar(tel, `✅ Folio ${cmd.arg.slice(-6)} liberado.\n\nEl usuario que lo tenía ahora puede canjearlo de nuevo (o tú).`, trace);
       }
 
+      case 'bloquear': {
+        const reason = cmd.reason && cmd.reason.length >= 3 
+          ? cmd.reason.slice(0, 200) 
+          : 'Incumplimiento de términos y condiciones';
+        const res = await sbRpc("admin_block_user", {
+          p_target_identifier: cmd.arg,
+          p_admin_phone: tel,
+          p_reason: reason,
+        }, trace);
+        if (!res?.ok) {
+          const errMap = {
+            'not_admin': '🚫 No autorizado.',
+            'user_not_found': `❌ No encontré usuario *${cmd.arg}*.\n\nUsa el apodo o el teléfono completo.`,
+            'already_blocked': `⚠️ *${res.username}* ya estaba bloqueado.`,
+          };
+          return enviar(tel, errMap[res?.error] || `❌ Error: ${res?.error || 'desconocido'}`, trace);
+        }
+        log.warn(trace, `🚫 ADMIN BLOCK: ${res.username} bloqueado por ${tel}: ${reason}`);
+        metrics.users_blocked = (metrics.users_blocked || 0) + 1;
+        
+        // v3.46: invalidar cache local del bloqueado (próximo msg → re-load BD → detecta)
+        const blockedPhone = res.phone;
+        if (blockedPhone) {
+          sesiones.delete(blockedPhone);
+          log.info(trace, `🧹 Cache local de ${blockedPhone} invalidada tras bloqueo`);
+          
+          // Notificación PROACTIVA: avisar al usuario AHORA (no esperar a que escriba)
+          // Fire-and-forget: si falla (ej. user no tiene WA, número inválido), no rompe el flow del admin
+          enviar(blockedPhone, M.usuarioBloqueado(reason), trace)
+            .then(() => {
+              sbRpc("mark_blocked_notified", { p_phone: blockedPhone }, trace).catch(() => {});
+              blockedNotifyRateLimit.set(blockedPhone, Date.now());
+              log.info(trace, `✅ Notificación proactiva enviada a ${blockedPhone}`);
+            })
+            .catch(e => log.warn(trace, `⚠️ No se pudo notificar proactivamente a ${blockedPhone}: ${e.message}`));
+        }
+        
+        return enviar(tel, 
+          `🚫 *${res.username}* BLOQUEADO ✅\n\n` +
+          `📱 ${res.phone}\n` +
+          `📝 Razón: ${res.reason}\n\n` +
+          `📤 *Notificación enviada al usuario* — recibirá mensaje de descalificación en WhatsApp ahora.\n\n` +
+          `Para desbloquear: *DESBLOQUEAR ${res.username}*`,
+          trace);
+      }
+
+      case 'desbloquear': {
+        const res = await sbRpc("admin_unblock_user", {
+          p_target_identifier: cmd.arg,
+          p_admin_phone: tel,
+        }, trace);
+        if (!res?.ok) {
+          const errMap = {
+            'not_admin': '🚫 No autorizado.',
+            'user_not_found': `❌ No encontré usuario *${cmd.arg}*.`,
+            'not_blocked': `⚠️ *${res.username}* no estaba bloqueado.`,
+          };
+          return enviar(tel, errMap[res?.error] || `❌ Error: ${res?.error || 'desconocido'}`, trace);
+        }
+        log.info(trace, `✅ ADMIN UNBLOCK: ${res.username} desbloqueado por ${tel}`);
+        
+        // v3.46: invalidar cache local del desbloqueado + reset rate-limit
+        if (res.phone) {
+          sesiones.delete(res.phone);
+          blockedNotifyRateLimit.delete(res.phone);
+          log.info(trace, `🧹 Cache local de ${res.phone} invalidada tras desbloqueo`);
+        }
+        
+        return enviar(tel, 
+          `✅ *${res.username}* desbloqueado.\n\n` +
+          `📱 ${res.phone}\n` +
+          `Ya puede usar el bot normalmente.`,
+          trace);
+      }
+
+      case 'bloqueados': {
+        const list = await sbRpc("admin_list_blocked_users", {}, trace);
+        if (!Array.isArray(list) || list.length === 0) {
+          return enviar(tel, `✅ *No hay usuarios bloqueados.*`, trace);
+        }
+        const lines = list.slice(0, 20).map((b, i) => 
+          `${i + 1}. *${b.username}* (${b.phone_masked})\n` +
+          `   📝 ${b.reason}\n` +
+          `   📅 ${b.blocked_at} · por ${b.blocked_by}`
+        ).join('\n\n');
+        const more = list.length > 20 ? `\n\n_...y ${list.length - 20} más_` : '';
+        return enviar(tel, `🚫 *Usuarios bloqueados* (${list.length})\n\n${lines}${more}`, trace);
+      }
+
       default:
-        return enviar(tel, `Comando desconocido. Usa: ESTADO <user>, TOP10, SALUD, LIBERAR <folio>`, trace);
+        return enviar(tel, `Comando desconocido. Usa:\n• ESTADO <user>\n• TOP10\n• SALUD\n• LIBERAR <folio>\n• BLOQUEAR <user> [razón]\n• DESBLOQUEAR <user>\n• BLOQUEADOS`, trace);
     }
   } catch (e) {
     log.error(trace, `handleAdminCommand error:`, e);
@@ -2431,6 +2691,18 @@ setInterval(() => refreshAdminPhones(null).catch(() => {}), 5 * 60 * 1000);
 // Refresh inicial al boot (con 5s delay para que sbRpc esté listo)
 setTimeout(() => refreshAdminPhones(null).catch(() => {}), 5000);
 
+// ════════════════════════════════════════════════════════════════════════════
+// §7 · HANDLERS DE FASE — máquina de estados del usuario
+// ════════════════════════════════════════════════════════════════════════════
+// Función central que decide qué hacer con un mensaje según:
+//   • el contenido (intención detectada)
+//   • la fase actual del user (nuevo, esperando_username, esperando_folio, etc.)
+//   • permisos (admin? bloqueado?)
+//
+// ⚠️ ZONA DE ALTO CUIDADO: aquí vive la lógica de flujo del usuario.
+//    Romper una fase deja a usuarios atascados sin poder continuar.
+//    Si cambias algo: prueba TODAS las fases en testing antes de subir.
+
 async function procesarMensajeCore(tel, texto, trace) {
   atLog(tel, texto, 'in', getSesion(tel).fase);
 
@@ -2474,9 +2746,31 @@ async function procesarMensajeCore(tel, texto, trace) {
         return enviar(tel, M.servidorSaturado(), trace);
       }
     } else if (jugador) {
+      // v3.46 USER BLOCKED: si está bloqueado, notificar descalificación (rate-limited)
       if (jugador.wa_bloqueado === true) {
         metrics.user_blocked = (metrics.user_blocked || 0) + 1;
-        log.warn(trace, `🚫 Usuario bloqueado, ignorando: ${tel}`);
+        const now = Date.now();
+        const lastNotified = blockedNotifyRateLimit.get(tel) || 0;
+        const isFirstNotify = jugador.blocked_notified_at == null;
+        
+        // Rate limit: max 1 mensaje cada 5 minutos al bloqueado (evitar spam)
+        if (now - lastNotified < BLOCKED_NOTIFY_COOLDOWN_MS) {
+          log.info(trace, `🚫 Bloqueado ${tel} ya notificado <5min, silent skip`);
+          return;
+        }
+        
+        log.warn(trace, `🚫 Notificando descalificación a ${tel}: first=${isFirstNotify} reason="${jugador.blocked_reason || 'n/a'}"`);
+        blockedNotifyRateLimit.set(tel, now);
+        
+        if (isFirstNotify) {
+          // Primer mensaje después del bloqueo: notificación completa con razón
+          await enviar(tel, M.usuarioBloqueado(jugador.blocked_reason), trace);
+          // Marcar como notificado en BD (fire-and-forget)
+          sbRpc("mark_blocked_notified", { p_phone: tel }, trace).catch(() => {});
+        } else {
+          // Ya se le notificó antes: recordatorio breve
+          await enviar(tel, M.usuarioBloqueadoRecordatorio(), trace);
+        }
         return;
       }
 
@@ -3013,6 +3307,76 @@ async function procesarMensajeCore(tel, texto, trace) {
   // (esto cubre folios embebidos en texto: "mi folio es 8412...")
   const smartExtracted = extraerFolioInteligente(texto);
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // v3.45 MASTER KEY DETECTION — antes de cualquier validación
+  //
+  // Master keys: 21 dígitos que comienzan con 999. Saltan TODAS las
+  // validaciones normales (fecha, tienda, expiración, ya canjeado, límite
+  // diario). Marcan al usuario como master_key_user (excluido del leaderboard).
+  // Cada uso se registra en master_key_log con auditoría completa.
+  //
+  // Esto se procesa ANTES que extraerFolioInteligente porque master keys 
+  // empiezan con 999, no 84, y serían rechazadas por wrong_prefix.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const cleanedTexto = texto.replace(/\s/g, "");
+  if (/^999\d{18}$/.test(cleanedTexto)) {
+    const masterKey = cleanedTexto;
+    log.info(trace, `🔑 MASTER KEY detectado: serial=${masterKey.slice(-7)}`);
+    metrics.master_key_uses = (metrics.master_key_uses || 0) + 1;
+
+    // Necesitamos un user_id válido. Si no tenemos, primero registrar al user
+    if (!userId) {
+      // Generar magic link rápido para crear cuenta + asociar master key
+      log.info(trace, `Master key sin userId — pidiendo registro previo`);
+      const username = s.username;
+      if (!username) {
+        setSesion(tel, { 
+          fase: "esperando_username",
+          pendingMasterKey: masterKey 
+        });
+        return enviar(tel, M.folioOkPideNombre(
+          "Sucursal Master Key (interna)", 
+          "MASTER_KEY"
+        ), trace);
+      }
+    }
+
+    // Procesar master key (crea sesión sintética)
+    const mkResult = await sbRpc("claim_master_key_session", {
+      p_master_code: masterKey,
+      p_user_id:     userId,
+      p_phone:       tel,
+      p_username:    s.username || null,
+      p_trace:       trace
+    }, trace);
+
+    if (!mkResult?.success) {
+      log.error(trace, `Master key claim falló: ${JSON.stringify(mkResult)}`);
+      return enviar(tel, 
+        `🔑 Master key inválido o error interno.\n\n` +
+        `Detalles: ${mkResult?.error || 'desconocido'}\n\n` +
+        `Reporta esto al equipo técnico con el código: \`${masterKey.slice(-7)}\``,
+        trace);
+    }
+
+    // Generar magic link normal (el frontend cargará la sesión sintética)
+    const linkRes = await waAuth("get_link", { phone: tel }, trace);
+    let magicLink = linkRes?.magic_link;
+    let shortLink = magicLink;
+    if (magicLink && userId) {
+      const short = await crearShortLink(userId, magicLink, trace);
+      if (short) shortLink = short;
+    }
+
+    log.info(trace, `✅ Master key OK — synthetic_code=${mkResult.ticket_code}`);
+    return enviar(tel,
+      `🔑 *Master Key validado* — serial #${mkResult.serial}\n\n` +
+      `Tu sesión está lista. Toca aquí para jugar:\n${shortLink || magicLink || SITE_URL}\n\n` +
+      `⚠️ Esta sesión NO cuenta para el leaderboard real (es modo testing).\n` +
+      `Uso registrado en sistema (\`${masterKey.slice(-7)}\` · ${tel}).`,
+      trace);
+  }
+
   if (intencion === "folio_input" || (s.fase === "esperando_folio" && looksLikeFolio) || smartExtracted.found) {
     let folio;
 
@@ -3261,6 +3625,13 @@ async function procesarMensaje(tel, texto, trace) {
   metrics.msg_processed++;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// §10 · BROADCASTS + CLEANUP — procesos asíncronos
+// ════════════════════════════════════════════════════════════════════════════
+// Loops periódicos: procesar broadcasts pendientes, limpieza de Maps internos,
+// recuperación de broadcasts huérfanos.
+// ✏️ Seguro editar timeouts. ⚠️ Cuidado al editar la lógica de polling.
+
 // ─── BROADCASTS ─────────────────────────────────────────────────────────────
 async function procesarBroadcasts() {
   if (broadcastRunning) { metrics.broadcast_skipped++; return; }
@@ -3395,8 +3766,18 @@ function cleanupMaps() {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// §9 · ENDPOINTS HTTP — short links, webhook, game-complete, admin, monitoring
+// ════════════════════════════════════════════════════════════════════════════
+// Toda la superficie HTTP del bot. Express app.
+// 🔴 ZONA PROHIBIDA: el webhook es el punto de entrada de TODO mensaje
+//    de WhatsApp. Si falla, los mensajes se pierden silenciosamente.
+
 // ─── SHORT LINK REDIRECT (v3.39) ─────────────────────────────────────────────
-// Mohamed ya configuró Netlify: /j/* → https://gol-nutriza-production.up.railway.app/j/*
+// /j/CODE → resuelve a magic link real, redirige 302 al frontend.
+// Permite "tap único" en iOS WhatsApp (links a fanaticosdelsabor.com son 
+// clickeables sin warning).
+// El equipo web ya configuró Netlify: /j/* → https://gol-nutriza-production.up.railway.app/j/*
 // Este endpoint reclama el código y redirige al magic link real (302)
 app.get("/j/:code", async (req, res) => {
   const code = (req.params.code || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
@@ -3422,7 +3803,12 @@ app.get("/j/:code", async (req, res) => {
   }
 });
 
-// ─── WEBHOOK ────────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// §8 · WEBHOOK ENTRY (Meta Cloud API)
+// ════════════════════════════════════════════════════════════════════════════
+// Punto de entrada de TODOS los mensajes WhatsApp.
+// 🔴 ZONA PROHIBIDA: si esta función falla, los mensajes nunca llegan al bot.
+// Validación HMAC + IP rate limit + dedup + push al procesador.
 app.get("/webhook", (req, res) => {
   const { "hub.mode": m, "hub.verify_token": t, "hub.challenge": c } = req.query;
   if (m === "subscribe" && t === VERIFY_TOKEN) {
@@ -3736,6 +4122,9 @@ app.get("/admin-health-summary", async (req, res) => {
 });
 
 // ─── ENDPOINTS DE MONITORING ────────────────────────────────────────────────
+// /, /health, /ready, /metrics — usados por Railway, uptime monitors, alertas.
+// ⚠️ Cuidado: /health hace ping a Supabase + Meta API. Si falla, Railway
+//    reinicia el container. Cambiar timeout puede causar reinicios falsos.
 app.get("/", (_req, res) => res.json({
   status:       "ok",
   version:      VERSION,
@@ -3861,6 +4250,13 @@ app.get("/metrics", (req, res) => {
     hoy_mx:            hoyMexico(),
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// §11 · STARTUP — validación env + arranque servidor
+// ════════════════════════════════════════════════════════════════════════════
+// 🔴 ZONA PROHIBIDA: si esto falla, el bot ni arranca.
+// validarEnvVars() debe pasar todas las variables requeridas.
+// selfCheck() verifica conexiones a Supabase + Meta API antes de abrir puerto.
 
 // ─── STARTUP ────────────────────────────────────────────────────────────────
 function validarEnvVars() {
