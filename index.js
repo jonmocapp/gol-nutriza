@@ -2781,9 +2781,23 @@ async function procesarMensajeCore(tel, texto, trace) {
       if (recoveredPhase === "esperando_username") {
         const pendingRes = await sbRpc("get_pending_registration", { p_phone: tel }, trace);
         if (pendingRes?.found && pendingRes?.pending_folio) {
-          recoveredPendingFolio = pendingRes.pending_folio;
-          log.info(trace, `Sesión recuperada en esperando_username con pendingFolio=${recoveredPendingFolio}`);
-          metrics.session_recovery_with_folio = (metrics.session_recovery_with_folio || 0) + 1;
+          const isMasterKey = /^999\d{18}$/.test(pendingRes.pending_folio);
+          if (isMasterKey) {
+            // v3.46: era un master key guardado en BD — recuperar como pendingMasterKey
+            recoveredPendingFolio = null;
+            log.info(trace, `Sesión recuperada en esperando_username con pendingMasterKey=${pendingRes.pending_folio.slice(-7)}`);
+            metrics.session_recovery_master_key = (metrics.session_recovery_master_key || 0) + 1;
+            setSesion(tel, {
+              cargado: true, fase: "esperando_username",
+              pendingFolio: null,
+              pendingMasterKey: pendingRes.pending_folio,
+            });
+            // No continúa al flujo normal (ya seteó sesión)
+          } else {
+            recoveredPendingFolio = pendingRes.pending_folio;
+            log.info(trace, `Sesión recuperada en esperando_username con pendingFolio=${recoveredPendingFolio}`);
+            metrics.session_recovery_with_folio = (metrics.session_recovery_with_folio || 0) + 1;
+          }
         } else {
           log.warn(trace, `Sesión recuperada en esperando_username — pendingFolio no encontrado en BD, reset a esperando_folio`);
           metrics.session_recovery_lost_folio = (metrics.session_recovery_lost_folio || 0) + 1;
@@ -2812,12 +2826,14 @@ async function procesarMensajeCore(tel, texto, trace) {
       // v3.36: si no hay profile, ver si hay un registro pendiente (user mandó folio pero aún no apodo)
       const pendingRes = await sbRpc("get_pending_registration", { p_phone: tel }, trace);
       if (pendingRes?.found && pendingRes?.pending_folio) {
-        log.info(trace, `No hay profile pero sí pendingFolio=${pendingRes.pending_folio} — fase=esperando_username`);
+        const isMasterKey = /^999\d{18}$/.test(pendingRes.pending_folio);
+        log.info(trace, `No hay profile pero sí pending${isMasterKey ? 'MasterKey' : 'Folio'}=${pendingRes.pending_folio} — fase=esperando_username`);
         metrics.session_recovery_with_folio = (metrics.session_recovery_with_folio || 0) + 1;
         setSesion(tel, {
           cargado: true, fase: "esperando_username",
           username: null, userId: null, registered: false,
-          pendingFolio: pendingRes.pending_folio,
+          pendingFolio:     isMasterKey ? null : pendingRes.pending_folio,
+          pendingMasterKey: isMasterKey ? pendingRes.pending_folio : null,
           rondasHoy: 0, rondasTotal: 0, fechaReset: null
         });
       } else {
@@ -3169,6 +3185,80 @@ async function procesarMensajeCore(tel, texto, trace) {
     const val = validarUsername(nombrePropuesto);
     if (!val.valido) return enviar(tel, M.usernameInvalido(val.razon, val.sugerencia), trace);
 
+    // ═══════════════════════════════════════════════════════════
+    // v3.46 MASTER KEY PATH — si el usuario llegó aquí por un master key,
+    // el flow es diferente: registrar usuario → claim_master_key_session
+    // (en vez del flow normal: registrar → validate_and_claim_ticket)
+    // ═══════════════════════════════════════════════════════════
+    if (s.pendingMasterKey) {
+      const masterKey = s.pendingMasterKey;
+      log.info(trace, `→ register (master key path) username="${nombrePropuesto}" phone=${tel} key_serial=${masterKey.slice(-7)}`);
+      metrics.master_key_registrations = (metrics.master_key_registrations || 0) + 1;
+
+      const regRes = await waAuth("register", { phone: tel, username: nombrePropuesto }, trace);
+
+      if (regRes?.error === "username_taken") return enviar(tel, M.usernameTomado(generarSugerencia(nombrePropuesto)), trace);
+      if (regRes?.error === "inappropriate_username") {
+        metrics.username_rejected_profanity++;
+        return enviar(tel, M.usernameProfanity(generarSugerencia(nombrePropuesto)), trace);
+      }
+      if (regRes?.error === "unauthorized" || regRes?.error === "misconfigured" || regRes?.error === "edge_function_error") {
+        setSesion(tel, { fase: "esperando_folio", pendingMasterKey: null });
+        return enviar(tel, M.errorEdgeFunction(), trace);
+      }
+      if (!regRes?.success || !regRes.user_id) {
+        log.error(trace, "register (master key) fallido:", JSON.stringify(regRes).substring(0, 200));
+        setSesion(tel, { fase: "esperando_folio", pendingMasterKey: null });
+        return enviar(tel, M.errorRegistro(), trace);
+      }
+
+      const finalUsername = regRes.username || nombrePropuesto;
+      const newUserId     = regRes.user_id;
+
+      // Claim master key session (crea ticket sintético sucursal 32000)
+      const mkRes = await sbRpc("claim_master_key_session", {
+        p_master_code: masterKey,
+        p_user_id:     newUserId,
+        p_phone:       tel,
+        p_username:    finalUsername,
+        p_trace:       trace,
+      }, trace);
+
+      if (!mkRes?.success) {
+        log.error(trace, `Master key claim post-register falló: ${JSON.stringify(mkRes)}`);
+        setSesion(tel, { fase: "activo", username: finalUsername, userId: newUserId, pendingMasterKey: null });
+        return enviar(tel,
+          `Registrado como *${finalUsername}* ✅\n\nHubo un error con el master key (${masterKey.slice(-7)}). Inténtalo de nuevo enviando el mismo código.`,
+          trace);
+      }
+
+      // Actualizar sesión como usuario activo
+      setSesion(tel, {
+        fase: "activo", username: finalUsername, userId: newUserId,
+        pendingFolio: null, pendingMasterKey: null, intentos: 0,
+      });
+
+      log.info(trace, `✅ Master key registration completa: user=${finalUsername} ticket=${mkRes.ticket_code}`);
+
+      // Generar magic link + short link
+      let magicLink = regRes.magic_link;
+      let shortLink = magicLink;
+      if (magicLink && newUserId) {
+        const short = await crearShortLink(newUserId, magicLink, trace);
+        if (short) shortLink = short;
+      }
+
+      return enviar(tel,
+        `¡Listo, *${finalUsername}*! 🎉\n\n` +
+        `🔑 *Master Key activado* (serial #${mkRes.serial})\n\n` +
+        `Toca aquí para jugar:\n${shortLink || magicLink || SITE_URL}\n\n` +
+        `⚠️ Esta sesión es de prueba — no cuenta para el leaderboard real.`,
+        trace);
+    }
+    // ═══════════════════════════════════════════════════════════
+    // END MASTER KEY PATH — el código normal sigue abajo
+    // ═══════════════════════════════════════════════════════════
+
     // v3.36 BUG FIX: verificar pendingFolio ANTES del register para evitar usuarios fantasma
     // Si no hay en memoria, intentar recuperar de BD una última vez
     let prefolioVerify = s.pendingFolio;
@@ -3334,6 +3424,8 @@ async function procesarMensajeCore(tel, texto, trace) {
           fase: "esperando_username",
           pendingMasterKey: masterKey 
         });
+        // v3.46: persistir en BD para que sobreviva stale-cache reload
+        sbRpc("save_pending_registration", { p_phone: tel, p_folio: masterKey }, trace).catch(() => {});
         return enviar(tel, M.folioOkPideNombre(
           "Sucursal Master Key (interna)", 
           "MASTER_KEY"
