@@ -1,7 +1,9 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  GOL NUTRISA — BOT v3.46 — PRODUCCIÓN                                        ║
+// ║  GOL NUTRISA — BOT v3.48 — PRODUCCIÓN                                        ║
 // ║  Fanáticos del Sabor · Grupo Nutrisa · WhatsApp-native                       ║
 // ║                                                                              ║
+// ║  v3.48: Cooldown progresivo + folio cap dinámico (anti-fraude pentest)       ║
+// ║  v3.47: Cap superior de folios por marca (mitigación brute-force)            ║
 // ║  v3.46: User Blocking System — admin BLOQUEAR/DESBLOQUEAR + descalificación  ║
 // ║  v3.45: Master Key infinito + refactor por secciones con candados            ║
 // ║  v3.44: Dashboard ejecutivo Airtable + sync hourly                           ║
@@ -63,6 +65,28 @@
 //      hot-deploy. El frontend lo maneja un equipo separado.
 //
 // ════════════════════════════════════════════════════════════════════════════════
+//
+// ─── NUEVO EN v3.48 (26 may 2026 — Cooldown progresivo anti-fraude) ──────────
+// Sistema que escala bloqueos cuando un usuario mete folios incorrectos
+// repetidamente. La lógica vive en BD (preview_ticket / validate_and_claim_ticket).
+// El bot solo maneja los nuevos error codes que la BD devuelve:
+//
+// NUEVO ERROR CODE `cooldown_active`:
+//    BD responde: { error: 'cooldown_active', cooldown_level: N,
+//                   minutes_remaining: X.X, cooldown_until: 'ISO' }
+//    • Nivel 1 (3 errores consecutivos) → 10 min
+//    • Nivel 2 (2 errores más)          → 30 min
+//    • Nivel 3 (2 errores más)          → 60 min
+//    • 1+ hora sin errores              → reset a nivel 0
+//    Bot muestra mensaje específico con minutos restantes.
+//
+// ─── NUEVO EN v3.47 (26 may 2026 — Cap de folios por marca) ──────────────────
+// Evita brute-force de folios futuros. La BD calcula techo dinámico por marca:
+//    Nutrisa: baseline + 150 × días_desde_24may · Cielito: +100/día
+//    Chilim/Moyo: +50/día · Testers/master_key exentos
+//
+// NUEVO ERROR CODE `folio_too_high`:
+//    Folio sobrepasa el cap dinámico de la marca → mensaje específico.
 //
 // ─── NUEVO EN v3.46 (24 may 2026 — User Blocking System) ─────────────────────
 // Sistema completo de bloqueo de usuarios por incumplimiento de T&Cs:
@@ -398,7 +422,7 @@ app.use((err, req, res, next) => {
 //    🔴 NO TOCAR: SUPABASE_URL, SECRETS, env vars — rompe todo si están mal.
 
 // ─── ENV VARS ───────────────────────────────────────────────────────────────
-const VERSION         = "3.46";
+const VERSION         = "3.48";
 const VERIFY_TOKEN    = "golnutriza2026";
 const WHATSAPP_TOKEN  = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
@@ -1760,10 +1784,36 @@ Si el problema persiste, escribe *SOPORTE*.`,
 *No es algo que hicieras mal.* Inténtalo de nuevo en 1 a 2 minutos.
 
 Si el problema persiste, escribe *SOPORTE*.`,
+
+      // v3.47: folio supera el cap dinámico por marca
+      folio_too_high:
+`Ese folio no es válido para esta campaña 📋
+
+El número de folio está fuera del rango esperado para esta marca.
+
+💡 Verifica que copiaste el folio completo — debe ser *21 dígitos* exactos empezando con *84*.
+
+Si el ticket es reciente y legítimo, escribe *SOPORTE*.`,
     };
     return msgs[error] || `No pude validar ese folio. Verifica que esté completo y envíalo de nuevo.
 
 💡 Si consideras que algo no está bien, escribe *SOPORTE*.`;
+  },
+
+  // v3.48: cooldown progresivo — recibe nivel y minutos restantes de la BD
+  cooldownActivo: (level, minutesRemaining) => {
+    const mins = Math.ceil(minutesRemaining || 1);
+    const levelMsgs = {
+      1: `Mandaste varios folios incorrectos seguidos 🛑`,
+      2: `Sigues mandando folios incorrectos 🛑`,
+      3: `Tu cuenta está en bloqueo temporal por múltiples intentos fallidos 🛑`,
+    };
+    const intro = levelMsgs[level] || `Tu cuenta está en pausa temporal 🛑`;
+    return `${intro}
+
+Puedes volver a intentarlo en *${mins} minuto${mins !== 1 ? 's' : ''}*.
+
+💡 Si tienes un folio válido y crees que es un error, escribe *SOPORTE*.`;
   },
 
   errorRegistro: () =>
@@ -3543,6 +3593,12 @@ async function procesarMensajeCore(tel, texto, trace) {
       logFolioAttempt(tel, userId, folio, 'preview', preview?.error || 'invalid', trace);
       registerLastFolio(tel, folio, preview?.error || 'invalid');
       if (userId) releaseFolioLock(folio, trace);
+      // v3.48: cooldown progresivo — mensaje especial con minutos restantes
+      if (preview?.error === 'cooldown_active') {
+        metrics.cooldown_blocked = (metrics.cooldown_blocked || 0) + 1;
+        log.warn(trace, `COOLDOWN nivel ${preview.cooldown_level} para ${tel} — ${preview.minutes_remaining}min`);
+        return enviar(tel, M.cooldownActivo(preview.cooldown_level, preview.minutes_remaining), trace);
+      }
       return enviar(tel, M.folioError(preview?.error || "invalid_format"), trace);
     }
     metrics.preview_ticket_ok++;
